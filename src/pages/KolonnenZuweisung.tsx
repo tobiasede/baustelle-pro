@@ -226,8 +226,8 @@ export default function KolonnenZuweisung() {
                           <TableCell>{kolonne.project || '-'}</TableCell>
                           <TableCell className="min-w-[300px]">
                             <Select
-                              value={currentLvId || ''}
-                              onValueChange={(value) => handleAssignmentChange(kolonne.id, value || null)}
+                              value={currentLvId || '__none__'}
+                              onValueChange={(value) => handleAssignmentChange(kolonne.id, value === '__none__' ? null : value)}
                               disabled={isSaving}
                             >
                               <SelectTrigger className="w-full">
@@ -236,7 +236,7 @@ export default function KolonnenZuweisung() {
                                 </SelectValue>
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="">Keine Zuweisung</SelectItem>
+                                <SelectItem value="__none__">Keine Zuweisung</SelectItem>
                                 {lvs.map((lv) => (
                                   <SelectItem key={lv.id} value={lv.id}>
                                     {getLVDisplay(lv)}
