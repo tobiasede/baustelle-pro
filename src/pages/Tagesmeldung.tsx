@@ -1,0 +1,614 @@
+import { useState, useEffect } from 'react';
+import { AppLayout } from '@/components/layout/AppLayout';
+import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/integrations/supabase/client';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { toast } from 'sonner';
+import { Loader2, AlertCircle, ClipboardList, Save, AlertTriangle, Euro } from 'lucide-react';
+
+interface Kolonne {
+  id: string;
+  number: string;
+  project: string | null;
+}
+
+interface LVItem {
+  id: string;
+  position_code: string;
+  short_text: string;
+  unit: string;
+  unit_price: number;
+  category: string | null;
+}
+
+interface LV {
+  id: string;
+  name: string;
+  version: string;
+  valid_from: string | null;
+  valid_to: string | null;
+}
+
+interface ReportItem {
+  lv_item_id: string;
+  qty_plan: number;
+  qty_actual: number;
+}
+
+export default function Tagesmeldung() {
+  const { user, isBauleiter, isHostOrGF } = useAuth();
+  const [kolonnen, setKolonnen] = useState<Kolonne[]>([]);
+  const [lvItems, setLvItems] = useState<LVItem[]>([]);
+  const [currentLV, setCurrentLV] = useState<LV | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [validityWarning, setValidityWarning] = useState<string | null>(null);
+
+  // Form state
+  const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [selectedKolonneId, setSelectedKolonneId] = useState<string>('');
+  const [employeesCount, setEmployeesCount] = useState<number>(0);
+  const [hoursPerEmployee, setHoursPerEmployee] = useState<number>(8);
+  const [reportItems, setReportItems] = useState<Map<string, ReportItem>>(new Map());
+
+  // Computed values
+  const [plannedRevenue, setPlannedRevenue] = useState<number>(0);
+  const [actualRevenue, setActualRevenue] = useState<number>(0);
+
+  useEffect(() => {
+    fetchKolonnen();
+  }, [user, isBauleiter]);
+
+  useEffect(() => {
+    if (selectedKolonneId) {
+      fetchLVForKolonne(selectedKolonneId);
+    } else {
+      setLvItems([]);
+      setCurrentLV(null);
+    }
+  }, [selectedKolonneId]);
+
+  useEffect(() => {
+    // Check LV validity when date changes
+    if (currentLV && selectedDate) {
+      checkLVValidity();
+    }
+  }, [selectedDate, currentLV]);
+
+  useEffect(() => {
+    // Calculate revenues
+    let planned = 0;
+    let actual = 0;
+
+    reportItems.forEach((item) => {
+      const lvItem = lvItems.find(lvi => lvi.id === item.lv_item_id);
+      if (lvItem) {
+        planned += item.qty_plan * Number(lvItem.unit_price);
+        actual += item.qty_actual * Number(lvItem.unit_price);
+      }
+    });
+
+    setPlannedRevenue(planned);
+    setActualRevenue(actual);
+  }, [reportItems, lvItems]);
+
+  const fetchKolonnen = async () => {
+    setLoading(true);
+    
+    if (isBauleiter && user) {
+      // Bauleiter can only see assigned kolonnen
+      const { data: assignments, error: assignError } = await supabase
+        .from('bauleiter_kolonne_assignments')
+        .select('kolonne_id')
+        .eq('user_id', user.id);
+
+      if (assignError) {
+        toast.error('Fehler beim Laden der Kolonnen');
+        console.error(assignError);
+        setLoading(false);
+        return;
+      }
+
+      if (assignments && assignments.length > 0) {
+        const kolonneIds = assignments.map(a => a.kolonne_id);
+        const { data, error } = await supabase
+          .from('kolonnen')
+          .select('*')
+          .in('id', kolonneIds)
+          .order('number');
+
+        if (error) {
+          toast.error('Fehler beim Laden der Kolonnen');
+          console.error(error);
+        } else {
+          setKolonnen(data || []);
+        }
+      } else {
+        setKolonnen([]);
+      }
+    } else if (isHostOrGF) {
+      // HOST/GF can see all kolonnen
+      const { data, error } = await supabase
+        .from('kolonnen')
+        .select('*')
+        .order('number');
+
+      if (error) {
+        toast.error('Fehler beim Laden der Kolonnen');
+        console.error(error);
+      } else {
+        setKolonnen(data || []);
+      }
+    }
+    
+    setLoading(false);
+  };
+
+  const fetchLVForKolonne = async (kolonneId: string) => {
+    // Get active LV assignment for this kolonne
+    const { data: assignment, error: assignError } = await supabase
+      .from('kolonne_lv_assignments')
+      .select('lv_id')
+      .eq('kolonne_id', kolonneId)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (assignError) {
+      toast.error('Fehler beim Laden der LV-Zuweisung');
+      console.error(assignError);
+      return;
+    }
+
+    if (!assignment) {
+      toast.warning('Dieser Kolonne ist kein LV zugewiesen');
+      setLvItems([]);
+      setCurrentLV(null);
+      return;
+    }
+
+    // Fetch LV details
+    const { data: lvData, error: lvError } = await supabase
+      .from('lvs')
+      .select('*')
+      .eq('id', assignment.lv_id)
+      .single();
+
+    if (lvError) {
+      toast.error('Fehler beim Laden des LV');
+      console.error(lvError);
+      return;
+    }
+
+    setCurrentLV(lvData);
+
+    // Fetch LV items
+    const { data: items, error: itemsError } = await supabase
+      .from('lv_items')
+      .select('*')
+      .eq('lv_id', assignment.lv_id)
+      .order('position_code');
+
+    if (itemsError) {
+      toast.error('Fehler beim Laden der LV-Positionen');
+      console.error(itemsError);
+    } else {
+      setLvItems(items || []);
+      // Initialize report items
+      const newReportItems = new Map<string, ReportItem>();
+      (items || []).forEach(item => {
+        newReportItems.set(item.id, {
+          lv_item_id: item.id,
+          qty_plan: 0,
+          qty_actual: 0
+        });
+      });
+      setReportItems(newReportItems);
+    }
+  };
+
+  const checkLVValidity = () => {
+    if (!currentLV) return;
+
+    const date = new Date(selectedDate);
+    let warning = null;
+
+    if (currentLV.valid_from && new Date(currentLV.valid_from) > date) {
+      warning = 'Die ausgewählte LV-Version ist für dieses Datum nicht gültig. Bitte GF kontaktieren.';
+    }
+    if (currentLV.valid_to && new Date(currentLV.valid_to) < date) {
+      warning = 'Die ausgewählte LV-Version ist für dieses Datum nicht gültig. Bitte GF kontaktieren.';
+    }
+
+    setValidityWarning(warning);
+  };
+
+  const handleItemChange = (itemId: string, field: 'qty_plan' | 'qty_actual', value: number) => {
+    const newReportItems = new Map(reportItems);
+    const item = newReportItems.get(itemId);
+    if (item) {
+      newReportItems.set(itemId, { ...item, [field]: value });
+      setReportItems(newReportItems);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!selectedKolonneId || !selectedDate || !user) {
+      toast.error('Bitte füllen Sie alle Pflichtfelder aus');
+      return;
+    }
+
+    if (employeesCount <= 0) {
+      toast.error('Bitte geben Sie die Anzahl der Mitarbeiter an');
+      return;
+    }
+
+    if (validityWarning) {
+      toast.error('Die LV-Version ist für das gewählte Datum nicht gültig');
+      return;
+    }
+
+    setSaving(true);
+
+    // Calculate KPIs
+    const revPerEmployee = employeesCount > 0 ? actualRevenue / employeesCount : 0;
+    const totalHours = employeesCount * hoursPerEmployee;
+    const revPerHour = totalHours > 0 ? actualRevenue / totalHours : 0;
+
+    // Create or update the report tag
+    const { data: existingTag, error: checkError } = await supabase
+      .from('leistungsmeldung_tags')
+      .select('id')
+      .eq('kolonne_id', selectedKolonneId)
+      .eq('date', selectedDate)
+      .maybeSingle();
+
+    if (checkError) {
+      toast.error('Fehler beim Prüfen vorhandener Meldungen');
+      console.error(checkError);
+      setSaving(false);
+      return;
+    }
+
+    let tagId: string;
+
+    if (existingTag) {
+      // Update existing
+      const { error: updateError } = await supabase
+        .from('leistungsmeldung_tags')
+        .update({
+          employees_count: employeesCount,
+          hours_per_employee: hoursPerEmployee,
+          planned_revenue: plannedRevenue,
+          actual_revenue: actualRevenue,
+          rev_per_employee: revPerEmployee,
+          rev_per_hour: revPerHour
+        })
+        .eq('id', existingTag.id);
+
+      if (updateError) {
+        toast.error('Fehler beim Aktualisieren der Meldung');
+        console.error(updateError);
+        setSaving(false);
+        return;
+      }
+
+      tagId = existingTag.id;
+
+      // Delete old items
+      await supabase
+        .from('leistungsmeldung_items')
+        .delete()
+        .eq('leistungsmeldung_tag_id', tagId);
+
+    } else {
+      // Create new
+      const { data: newTag, error: insertError } = await supabase
+        .from('leistungsmeldung_tags')
+        .insert({
+          date: selectedDate,
+          kolonne_id: selectedKolonneId,
+          foreman_id: user.id,
+          employees_count: employeesCount,
+          hours_per_employee: hoursPerEmployee,
+          planned_revenue: plannedRevenue,
+          actual_revenue: actualRevenue,
+          rev_per_employee: revPerEmployee,
+          rev_per_hour: revPerHour
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        toast.error('Fehler beim Erstellen der Meldung');
+        console.error(insertError);
+        setSaving(false);
+        return;
+      }
+
+      tagId = newTag.id;
+    }
+
+    // Insert items
+    const itemsToInsert = Array.from(reportItems.values())
+      .filter(item => item.qty_plan > 0 || item.qty_actual > 0)
+      .map(item => ({
+        leistungsmeldung_tag_id: tagId,
+        lv_item_id: item.lv_item_id,
+        qty_plan: item.qty_plan,
+        qty_actual: item.qty_actual
+      }));
+
+    if (itemsToInsert.length > 0) {
+      const { error: itemsError } = await supabase
+        .from('leistungsmeldung_items')
+        .insert(itemsToInsert);
+
+      if (itemsError) {
+        toast.error('Fehler beim Speichern der Positionen');
+        console.error(itemsError);
+        setSaving(false);
+        return;
+      }
+    }
+
+    toast.success('Tagesmeldung erfolgreich gespeichert');
+    setSaving(false);
+  };
+
+  const formatCurrency = (value: number): string => {
+    return new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(value);
+  };
+
+  return (
+    <AppLayout>
+      <div className="content-container animate-fade-in">
+        {/* Header */}
+        <div className="mb-6">
+          <h1 className="text-2xl font-bold text-foreground">Tagesmeldung</h1>
+          <p className="text-muted-foreground">Tägliche Leistungsmeldung erfassen</p>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+          </div>
+        ) : kolonnen.length === 0 ? (
+          <Card className="card-elevated border-warning/30 bg-warning/5">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-warning">
+                <AlertCircle className="w-5 h-5" />
+                Keine Kolonnen zugewiesen
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-muted-foreground">
+                {isBauleiter 
+                  ? 'Ihnen sind noch keine Kolonnen zugewiesen. Bitte kontaktieren Sie einen Geschäftsführer.'
+                  : 'Es sind noch keine Kolonnen im System vorhanden.'}
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <>
+            {/* Form Section */}
+            <Card className="card-elevated mb-6">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <ClipboardList className="w-5 h-5" />
+                  Meldungsdaten
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="date">Datum *</Label>
+                    <Input
+                      id="date"
+                      type="date"
+                      value={selectedDate}
+                      onChange={(e) => setSelectedDate(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="kolonne">Kolonne *</Label>
+                    <Select value={selectedKolonneId} onValueChange={setSelectedKolonneId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Kolonne wählen..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {kolonnen.map((kolonne) => (
+                          <SelectItem key={kolonne.id} value={kolonne.id}>
+                            {kolonne.number} {kolonne.project && `(${kolonne.project})`}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="employees"># Mitarbeiter *</Label>
+                    <Input
+                      id="employees"
+                      type="number"
+                      min={0}
+                      value={employeesCount}
+                      onChange={(e) => setEmployeesCount(parseInt(e.target.value) || 0)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="hours">Anzahl Stunden / MA</Label>
+                    <Input
+                      id="hours"
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      value={hoursPerEmployee}
+                      onChange={(e) => setHoursPerEmployee(parseFloat(e.target.value) || 0)}
+                    />
+                  </div>
+                </div>
+
+                {validityWarning && (
+                  <Alert variant="destructive" className="mt-4">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertDescription>{validityWarning}</AlertDescription>
+                  </Alert>
+                )}
+
+                {currentLV && (
+                  <div className="mt-4 p-3 bg-muted rounded-md">
+                    <p className="text-sm text-muted-foreground">
+                      <strong>Zugewiesenes LV:</strong> {currentLV.name} (v{currentLV.version})
+                      {currentLV.valid_from && currentLV.valid_to && (
+                        <span> • Gültig: {currentLV.valid_from} - {currentLV.valid_to}</span>
+                      )}
+                    </p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Items Table */}
+            {selectedKolonneId && lvItems.length > 0 && (
+              <Card className="card-elevated mb-6">
+                <CardHeader>
+                  <CardTitle>Positionen</CardTitle>
+                  <CardDescription>{lvItems.length} Positionen</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-32">Positions-ID</TableHead>
+                          <TableHead>Kurztext</TableHead>
+                          <TableHead className="w-20">Einheit</TableHead>
+                          <TableHead className="w-32 text-right">EP (€)</TableHead>
+                          <TableHead className="w-32">PLAN Menge</TableHead>
+                          <TableHead className="w-32">IST Menge</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {lvItems.map((item) => {
+                          const reportItem = reportItems.get(item.id);
+                          return (
+                            <TableRow key={item.id}>
+                              <TableCell className="font-mono text-sm">{item.position_code}</TableCell>
+                              <TableCell className="max-w-xs truncate">{item.short_text}</TableCell>
+                              <TableCell>{item.unit}</TableCell>
+                              <TableCell className="text-right">{Number(item.unit_price).toFixed(2)}</TableCell>
+                              <TableCell>
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  step={0.001}
+                                  value={reportItem?.qty_plan || ''}
+                                  onChange={(e) => handleItemChange(item.id, 'qty_plan', parseFloat(e.target.value) || 0)}
+                                  className="w-full"
+                                  placeholder="0"
+                                />
+                              </TableCell>
+                              <TableCell>
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  step={0.001}
+                                  value={reportItem?.qty_actual || ''}
+                                  onChange={(e) => handleItemChange(item.id, 'qty_actual', parseFloat(e.target.value) || 0)}
+                                  className="w-full"
+                                  placeholder="0"
+                                />
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Summary & Save */}
+            {selectedKolonneId && lvItems.length > 0 && (
+              <Card className="card-elevated">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Euro className="w-5 h-5" />
+                    Zusammenfassung
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                    <div className="p-4 bg-muted rounded-lg">
+                      <p className="text-sm text-muted-foreground">Umsatz (PLAN)</p>
+                      <p className="text-xl font-bold">{formatCurrency(plannedRevenue)}</p>
+                    </div>
+                    <div className="p-4 bg-muted rounded-lg">
+                      <p className="text-sm text-muted-foreground">Umsatz (IST)</p>
+                      <p className="text-xl font-bold">{formatCurrency(actualRevenue)}</p>
+                    </div>
+                    <div className="p-4 bg-muted rounded-lg">
+                      <p className="text-sm text-muted-foreground">Umsatz/MA</p>
+                      <p className="text-xl font-bold">
+                        {employeesCount > 0 ? formatCurrency(actualRevenue / employeesCount) : 'N/A'}
+                      </p>
+                    </div>
+                    <div className="p-4 bg-muted rounded-lg">
+                      <p className="text-sm text-muted-foreground">Umsatz/Std</p>
+                      <p className="text-xl font-bold">
+                        {employeesCount > 0 && hoursPerEmployee > 0 
+                          ? formatCurrency(actualRevenue / (employeesCount * hoursPerEmployee)) 
+                          : 'N/A'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <Button 
+                    onClick={handleSave} 
+                    disabled={saving || !!validityWarning}
+                    className="w-full sm:w-auto"
+                  >
+                    {saving ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Speichern...
+                      </>
+                    ) : (
+                      <>
+                        <Save className="w-4 h-4 mr-2" />
+                        Tagesmeldung speichern
+                      </>
+                    )}
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
+
+            {selectedKolonneId && lvItems.length === 0 && currentLV === null && (
+              <Card className="card-elevated border-warning/30 bg-warning/5">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-warning">
+                    <AlertCircle className="w-5 h-5" />
+                    Kein LV zugewiesen
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-muted-foreground">
+                    Dieser Kolonne ist kein Leistungsverzeichnis zugewiesen. 
+                    Bitte kontaktieren Sie einen Geschäftsführer.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+          </>
+        )}
+      </div>
+    </AppLayout>
+  );
+}
