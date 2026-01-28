@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
@@ -6,9 +6,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { toast } from 'sonner';
+import { SelectField } from '@/components/SelectField';
 import { 
   Loader2, 
   AlertCircle, 
@@ -19,8 +19,18 @@ import {
   Euro,
   Users,
   Clock,
-  FileText
+  FileText,
+  Calendar
 } from 'lucide-react';
+import { 
+  aggregatePeriod, 
+  calculateKPIs, 
+  getDateRangeForPreset, 
+  toISODateString 
+} from '@/features/aggregation/stats';
+import { PERIOD_PRESETS, type PeriodPreset, type DailyRecord } from '@/features/aggregation/types';
+import { formatCurrency, formatDate } from '@/lib/numberUtils';
+import { toRadixSelectValue, fromRadixSelectValue } from '@/lib/selectUtils';
 
 interface Kolonne {
   id: string;
@@ -28,151 +38,160 @@ interface Kolonne {
   project: string | null;
 }
 
-interface LV {
-  id: string;
-  name: string;
-  version: string;
+// Storage key for persisting filters
+const FILTERS_STORAGE_KEY = 'berichte-filters';
+
+interface StoredFilters {
+  periodPreset?: PeriodPreset;
+  customDateFrom?: string;
+  customDateTo?: string;
+  selectedKolonne?: string;
+  selectedProject?: string;
 }
 
-interface Report {
-  id: string;
-  date: string;
-  kolonne_id: string;
-  employees_count: number;
-  hours_per_employee: number;
-  planned_revenue: number;
-  actual_revenue: number;
-  rev_per_employee: number | null;
-  rev_per_hour: number | null;
-  kolonnen: Kolonne;
+function loadStoredFilters(): StoredFilters {
+  try {
+    const stored = localStorage.getItem(FILTERS_STORAGE_KEY);
+    if (!stored) return {};
+    const parsed = JSON.parse(stored);
+    // Sanitize - no empty strings
+    return {
+      periodPreset: parsed.periodPreset || undefined,
+      customDateFrom: parsed.customDateFrom || undefined,
+      customDateTo: parsed.customDateTo || undefined,
+      selectedKolonne: parsed.selectedKolonne || undefined,
+      selectedProject: parsed.selectedProject || undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function saveFilters(filters: StoredFilters): void {
+  try {
+    localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(filters));
+  } catch {
+    // Ignore storage errors
+  }
 }
 
 export default function Berichte() {
   const { isHostOrGF } = useAuth();
-  const [reports, setReports] = useState<Report[]>([]);
+  const [reports, setReports] = useState<DailyRecord[]>([]);
   const [kolonnen, setKolonnen] = useState<Kolonne[]>([]);
-  const [lvs, setLvs] = useState<LV[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Filters
-  const [dateFrom, setDateFrom] = useState<string>('');
-  const [dateTo, setDateTo] = useState<string>('');
-  const [selectedKolonne, setSelectedKolonne] = useState<string>('');
-  const [selectedProject, setSelectedProject] = useState<string>('');
+  // Load stored filters
+  const storedFilters = useMemo(() => loadStoredFilters(), []);
 
-  // KPIs
-  const [totalPlanned, setTotalPlanned] = useState(0);
-  const [totalActual, setTotalActual] = useState(0);
-  const [avgRevPerEmployee, setAvgRevPerEmployee] = useState(0);
-  const [avgRevPerHour, setAvgRevPerHour] = useState(0);
+  // Period selection
+  const [periodPreset, setPeriodPreset] = useState<PeriodPreset>(
+    storedFilters.periodPreset || 'this_month'
+  );
+  const [customDateFrom, setCustomDateFrom] = useState<string>(
+    storedFilters.customDateFrom || ''
+  );
+  const [customDateTo, setCustomDateTo] = useState<string>(
+    storedFilters.customDateTo || ''
+  );
+
+  // Other filters
+  const [selectedKolonne, setSelectedKolonne] = useState<string | undefined>(
+    storedFilters.selectedKolonne
+  );
+  const [selectedProject, setSelectedProject] = useState<string | undefined>(
+    storedFilters.selectedProject
+  );
+
+  // Computed date range
+  const dateRange = useMemo(() => {
+    if (periodPreset === 'custom') {
+      return {
+        from: customDateFrom ? new Date(customDateFrom) : new Date(),
+        to: customDateTo ? new Date(customDateTo) : new Date(),
+      };
+    }
+    return getDateRangeForPreset(periodPreset);
+  }, [periodPreset, customDateFrom, customDateTo]);
+
+  // Filter and aggregate reports
+  const { filteredReports, aggregation, kpis } = useMemo(() => {
+    let filtered = reports;
+
+    // Filter by kolonne if selected
+    if (selectedKolonne) {
+      filtered = filtered.filter(r => r.kolonne_id === selectedKolonne);
+    }
+
+    // Filter by project if selected
+    if (selectedProject) {
+      filtered = filtered.filter(r => r.kolonnen?.project === selectedProject);
+    }
+
+    const agg = aggregatePeriod(filtered, dateRange);
+    const calculatedKpis = calculateKPIs(agg.totals);
+
+    return {
+      filteredReports: filtered.filter(r => {
+        const date = new Date(r.date);
+        return date >= dateRange.from && date <= dateRange.to;
+      }),
+      aggregation: agg,
+      kpis: calculatedKpis,
+    };
+  }, [reports, selectedKolonne, selectedProject, dateRange]);
+
+  // Save filters when they change
+  useEffect(() => {
+    saveFilters({
+      periodPreset,
+      customDateFrom: customDateFrom || undefined,
+      customDateTo: customDateTo || undefined,
+      selectedKolonne,
+      selectedProject,
+    });
+  }, [periodPreset, customDateFrom, customDateTo, selectedKolonne, selectedProject]);
 
   useEffect(() => {
     fetchFiltersData();
     fetchReports();
   }, []);
 
-  useEffect(() => {
-    fetchReports();
-  }, [dateFrom, dateTo, selectedKolonne, selectedProject]);
-
   const fetchFiltersData = async () => {
-    const [kolResult, lvResult] = await Promise.all([
-      supabase.from('kolonnen').select('*').order('number'),
-      supabase.from('lvs').select('*').order('name')
-    ]);
+    const { data: kolResult } = await supabase
+      .from('kolonnen')
+      .select('*')
+      .order('number');
 
-    if (kolResult.data) setKolonnen(kolResult.data);
-    if (lvResult.data) setLvs(lvResult.data);
+    if (kolResult) setKolonnen(kolResult);
   };
 
   const fetchReports = async () => {
     setLoading(true);
 
-    let query = supabase
+    const { data, error } = await supabase
       .from('leistungsmeldung_tags')
       .select('*, kolonnen(*)')
       .order('date', { ascending: false });
-
-    if (dateFrom) {
-      query = query.gte('date', dateFrom);
-    }
-    if (dateTo) {
-      query = query.lte('date', dateTo);
-    }
-    if (selectedKolonne) {
-      query = query.eq('kolonne_id', selectedKolonne);
-    }
-
-    const { data, error } = await query;
 
     if (error) {
       toast.error('Fehler beim Laden der Berichte');
       console.error(error);
     } else {
-      let filteredData = data || [];
-      
-      // Filter by project if selected
-      if (selectedProject) {
-        filteredData = filteredData.filter(r => 
-          r.kolonnen?.project === selectedProject
-        );
-      }
-
-      setReports(filteredData as Report[]);
-      calculateKPIs(filteredData as Report[]);
+      setReports((data || []) as DailyRecord[]);
     }
 
     setLoading(false);
   };
 
-  const calculateKPIs = (data: Report[]) => {
-    if (data.length === 0) {
-      setTotalPlanned(0);
-      setTotalActual(0);
-      setAvgRevPerEmployee(0);
-      setAvgRevPerHour(0);
-      return;
-    }
-
-    const planned = data.reduce((sum, r) => sum + Number(r.planned_revenue || 0), 0);
-    const actual = data.reduce((sum, r) => sum + Number(r.actual_revenue || 0), 0);
-    
-    const revsPerEmployee = data
-      .filter(r => r.rev_per_employee !== null)
-      .map(r => Number(r.rev_per_employee));
-    const avgRPE = revsPerEmployee.length > 0 
-      ? revsPerEmployee.reduce((a, b) => a + b, 0) / revsPerEmployee.length 
-      : 0;
-
-    const revsPerHour = data
-      .filter(r => r.rev_per_hour !== null)
-      .map(r => Number(r.rev_per_hour));
-    const avgRPH = revsPerHour.length > 0 
-      ? revsPerHour.reduce((a, b) => a + b, 0) / revsPerHour.length 
-      : 0;
-
-    setTotalPlanned(planned);
-    setTotalActual(actual);
-    setAvgRevPerEmployee(avgRPE);
-    setAvgRevPerHour(avgRPH);
-  };
-
-  const formatCurrency = (value: number): string => {
-    return new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(value);
-  };
-
-  const formatDate = (date: string): string => {
-    return new Date(date).toLocaleDateString('de-DE');
-  };
-
   const handleExportCSV = () => {
-    if (reports.length === 0) {
+    if (filteredReports.length === 0) {
       toast.error('Keine Daten zum Exportieren');
       return;
     }
 
     const headers = ['Datum', 'Kolonne', 'Projekt', 'Mitarbeiter', 'Stunden/MA', 'Umsatz PLAN', 'Umsatz IST', 'Umsatz/MA', 'Umsatz/Std'];
-    const rows = reports.map(r => [
+    const rows = filteredReports.map(r => [
       r.date,
       r.kolonnen?.number || '',
       r.kolonnen?.project || '',
@@ -196,9 +215,15 @@ export default function Berichte() {
     toast.success('CSV-Export erfolgreich');
   };
 
-  const projects = [...new Set(kolonnen.map(k => k.project).filter(Boolean))];
-  const delta = totalActual - totalPlanned;
-  const deltaPositive = delta >= 0;
+  const projects = [...new Set(kolonnen.map(k => k.project).filter(Boolean))] as string[];
+  
+  // Build options for SelectField
+  const periodOptions = PERIOD_PRESETS.map(p => ({ label: p.label, value: p.value }));
+  const kolonneOptions = kolonnen.map(k => ({ 
+    label: `${k.number}${k.project ? ` (${k.project})` : ''}`, 
+    value: k.id 
+  }));
+  const projectOptions = projects.map(p => ({ label: p, value: p }));
 
   if (!isHostOrGF) {
     return (
@@ -240,66 +265,100 @@ export default function Berichte() {
         {/* Filters */}
         <Card className="card-elevated mb-6">
           <CardHeader>
-            <CardTitle>Filter</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <Calendar className="w-5 h-5" />
+              Filter
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="space-y-2">
-                <Label>Zeitraum von</Label>
-                <Input
-                  type="date"
-                  value={dateFrom}
-                  onChange={(e) => setDateFrom(e.target.value)}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Zeitraum bis</Label>
-                <Input
-                  type="date"
-                  value={dateTo}
-                  onChange={(e) => setDateTo(e.target.value)}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Kolonne</Label>
-                <Select value={selectedKolonne} onValueChange={setSelectedKolonne}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Alle Kolonnen" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="">Alle Kolonnen</SelectItem>
-                    {kolonnen.map((k) => (
-                      <SelectItem key={k.id} value={k.id}>{k.number}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Projekt</Label>
-                <Select value={selectedProject} onValueChange={setSelectedProject}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Alle Projekte" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="">Alle Projekte</SelectItem>
-                    {projects.map((p) => (
-                      <SelectItem key={p} value={p!}>{p}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+              {/* Period Preset */}
+              <SelectField
+                label="Zeitraum"
+                value={periodPreset}
+                onChange={(v) => setPeriodPreset((v as PeriodPreset) || 'this_month')}
+                options={periodOptions}
+                placeholder="Zeitraum wählen"
+              />
+
+              {/* Custom Date Range */}
+              {periodPreset === 'custom' && (
+                <>
+                  <div className="space-y-2">
+                    <Label>Von</Label>
+                    <Input
+                      type="date"
+                      value={customDateFrom}
+                      onChange={(e) => setCustomDateFrom(e.target.value)}
+                      max={customDateTo || undefined}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Bis</Label>
+                    <Input
+                      type="date"
+                      value={customDateTo}
+                      onChange={(e) => setCustomDateTo(e.target.value)}
+                      min={customDateFrom || undefined}
+                    />
+                  </div>
+                </>
+              )}
+
+              {/* Kolonne Filter */}
+              <SelectField
+                label="Kolonne"
+                value={selectedKolonne}
+                onChange={setSelectedKolonne}
+                options={kolonneOptions}
+                placeholder="Alle Kolonnen"
+                allowEmpty
+                emptyLabel="Alle Kolonnen"
+              />
+
+              {/* Project Filter */}
+              <SelectField
+                label="Projekt"
+                value={selectedProject}
+                onChange={setSelectedProject}
+                options={projectOptions}
+                placeholder="Alle Projekte"
+                allowEmpty
+                emptyLabel="Alle Projekte"
+              />
+            </div>
+
+            {/* Show selected date range */}
+            <div className="mt-4 text-sm text-muted-foreground">
+              Zeitraum: {formatDate(dateRange.from)} – {formatDate(dateRange.to)}
             </div>
           </CardContent>
         </Card>
 
         {/* KPI Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
+          {/* Contributing Crews */}
           <Card className="card-elevated">
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-muted-foreground">Umsatz gesamt (PLAN)</p>
-                  <p className="text-2xl font-bold">{formatCurrency(totalPlanned)}</p>
+                  <p className="text-sm font-medium text-muted-foreground">Kolonnen mit Werten</p>
+                  <p className="text-2xl font-bold">{aggregation.contributingCrewsCount}</p>
+                </div>
+                <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
+                  <Users className="w-5 h-5 text-primary" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Planned Revenue */}
+          <Card className="card-elevated">
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">Umsatz (PLAN)</p>
+                  <p className="text-2xl font-bold">{formatCurrency(aggregation.totals.totalPlanned)}</p>
                 </div>
                 <div className="w-10 h-10 rounded-lg bg-info/10 flex items-center justify-center">
                   <FileText className="w-5 h-5 text-info" />
@@ -308,12 +367,13 @@ export default function Berichte() {
             </CardContent>
           </Card>
 
+          {/* Actual Revenue */}
           <Card className="card-elevated">
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-muted-foreground">Umsatz gesamt (IST)</p>
-                  <p className="text-2xl font-bold">{formatCurrency(totalActual)}</p>
+                  <p className="text-sm font-medium text-muted-foreground">Umsatz (IST)</p>
+                  <p className="text-2xl font-bold">{formatCurrency(aggregation.totals.totalActual)}</p>
                 </div>
                 <div className="w-10 h-10 rounded-lg bg-success/10 flex items-center justify-center">
                   <Euro className="w-5 h-5 text-success" />
@@ -322,17 +382,18 @@ export default function Berichte() {
             </CardContent>
           </Card>
 
+          {/* Delta */}
           <Card className="card-elevated">
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm font-medium text-muted-foreground">Delta (IST-PLAN)</p>
-                  <p className={`text-2xl font-bold ${deltaPositive ? 'text-success' : 'text-destructive'}`}>
-                    {formatCurrency(delta)}
+                  <p className={`text-2xl font-bold ${kpis.deltaPositive ? 'text-success' : 'text-destructive'}`}>
+                    {formatCurrency(kpis.delta)}
                   </p>
                 </div>
-                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${deltaPositive ? 'bg-success/10' : 'bg-destructive/10'}`}>
-                  {deltaPositive ? (
+                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${kpis.deltaPositive ? 'bg-success/10' : 'bg-destructive/10'}`}>
+                  {kpis.deltaPositive ? (
                     <TrendingUp className="w-5 h-5 text-success" />
                   ) : (
                     <TrendingDown className="w-5 h-5 text-destructive" />
@@ -342,12 +403,17 @@ export default function Berichte() {
             </CardContent>
           </Card>
 
+          {/* Revenue per Employee */}
           <Card className="card-elevated">
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm font-medium text-muted-foreground">Ø Umsatz/MA/AT</p>
-                  <p className="text-2xl font-bold">{formatCurrency(avgRevPerEmployee)}</p>
+                  <p className="text-2xl font-bold">
+                    {aggregation.contributingCrewsCount > 0 
+                      ? formatCurrency(kpis.avgRevPerEmployee) 
+                      : '—'}
+                  </p>
                 </div>
                 <div className="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center">
                   <Users className="w-5 h-5 text-accent" />
@@ -356,12 +422,17 @@ export default function Berichte() {
             </CardContent>
           </Card>
 
+          {/* Revenue per Hour */}
           <Card className="card-elevated">
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm font-medium text-muted-foreground">Ø Umsatz/MA/Std</p>
-                  <p className="text-2xl font-bold">{formatCurrency(avgRevPerHour)}</p>
+                  <p className="text-2xl font-bold">
+                    {aggregation.contributingCrewsCount > 0 
+                      ? formatCurrency(kpis.avgRevPerHour) 
+                      : '—'}
+                  </p>
                 </div>
                 <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
                   <Clock className="w-5 h-5 text-primary" />
@@ -378,17 +449,22 @@ export default function Berichte() {
               <BarChart3 className="w-5 h-5" />
               Tagesmeldungen
             </CardTitle>
-            <CardDescription>{reports.length} Einträge</CardDescription>
+            <CardDescription>
+              {filteredReports.length} Einträge im gewählten Zeitraum
+            </CardDescription>
           </CardHeader>
           <CardContent>
             {loading ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
               </div>
-            ) : reports.length === 0 ? (
+            ) : aggregation.contributingCrewsCount === 0 ? (
               <div className="text-center py-8">
                 <BarChart3 className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                <p className="text-muted-foreground">Keine Daten für den ausgewählten Zeitraum</p>
+                <p className="text-muted-foreground">Keine Werte im gewählten Zeitraum</p>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Passen Sie den Zeitraum oder die Filter an.
+                </p>
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -407,7 +483,7 @@ export default function Berichte() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {reports.map((report) => (
+                    {filteredReports.map((report) => (
                       <TableRow key={report.id}>
                         <TableCell>{formatDate(report.date)}</TableCell>
                         <TableCell className="font-medium">{report.kolonnen?.number}</TableCell>
@@ -417,10 +493,10 @@ export default function Berichte() {
                         <TableCell className="text-right">{formatCurrency(Number(report.planned_revenue))}</TableCell>
                         <TableCell className="text-right">{formatCurrency(Number(report.actual_revenue))}</TableCell>
                         <TableCell className="text-right">
-                          {report.rev_per_employee ? formatCurrency(Number(report.rev_per_employee)) : 'N/A'}
+                          {report.rev_per_employee ? formatCurrency(Number(report.rev_per_employee)) : '—'}
                         </TableCell>
                         <TableCell className="text-right">
-                          {report.rev_per_hour ? formatCurrency(Number(report.rev_per_hour)) : 'N/A'}
+                          {report.rev_per_hour ? formatCurrency(Number(report.rev_per_hour)) : '—'}
                         </TableCell>
                       </TableRow>
                     ))}
