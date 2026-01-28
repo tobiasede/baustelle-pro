@@ -8,10 +8,12 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { Loader2, AlertCircle, ClipboardList, Save, AlertTriangle, Euro } from 'lucide-react';
+import { Loader2, AlertCircle, ClipboardList, Save, AlertTriangle, Euro, Lock } from 'lucide-react';
 import { SelectField } from '@/components/SelectField';
-import { toNumberOrZero, formatCurrency } from '@/lib/numberUtils';
+import { toNumberOrZero, formatCurrency, formatDate } from '@/lib/numberUtils';
+import { isWithinEditWindow, getEditDeadline } from '@/features/aggregation/stats';
 
 interface Kolonne {
   id: string;
@@ -54,8 +56,12 @@ export default function Tagesmeldung() {
   // Form state
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [selectedKolonneId, setSelectedKolonneId] = useState<string | undefined>(undefined);
-  const [employeesCount, setEmployeesCount] = useState<string>('');
-  const [hoursPerEmployee, setHoursPerEmployee] = useState<string>('8');
+  
+  // Plan vs Actual fields
+  const [employeesPlan, setEmployeesPlan] = useState<string>('');
+  const [employeesActual, setEmployeesActual] = useState<string>('');
+  const [hoursPlan, setHoursPlan] = useState<string>('8');
+  const [hoursActual, setHoursActual] = useState<string>('8');
   const [reportItems, setReportItems] = useState<Map<string, ReportItem>>(new Map());
 
   // Track which fields have been touched (for hasEntries calculation)
@@ -66,8 +72,14 @@ export default function Tagesmeldung() {
   const [actualRevenue, setActualRevenue] = useState<number>(0);
 
   // Derived numeric values (treat empty as 0)
-  const employeesCountNum = toNumberOrZero(employeesCount);
-  const hoursPerEmployeeNum = toNumberOrZero(hoursPerEmployee);
+  const employeesPlanNum = toNumberOrZero(employeesPlan);
+  const employeesActualNum = toNumberOrZero(employeesActual);
+  const hoursPlanNum = toNumberOrZero(hoursPlan);
+  const hoursActualNum = toNumberOrZero(hoursActual);
+
+  // Edit window logic
+  const canEdit = isWithinEditWindow(selectedDate, isHostOrGF);
+  const editDeadline = getEditDeadline(selectedDate);
 
   useEffect(() => {
     fetchKolonnen();
@@ -254,14 +266,24 @@ export default function Tagesmeldung() {
     markFieldTouched(`item_${itemId}_${field}`);
   };
 
-  const handleEmployeesChange = (value: string) => {
-    setEmployeesCount(value);
-    markFieldTouched('employees_count');
+  const handleEmployeesPlanChange = (value: string) => {
+    setEmployeesPlan(value);
+    markFieldTouched('employees_plan');
   };
 
-  const handleHoursChange = (value: string) => {
-    setHoursPerEmployee(value);
-    markFieldTouched('hours_per_employee');
+  const handleEmployeesActualChange = (value: string) => {
+    setEmployeesActual(value);
+    markFieldTouched('employees_actual');
+  };
+
+  const handleHoursPlanChange = (value: string) => {
+    setHoursPlan(value);
+    markFieldTouched('hours_plan');
+  };
+
+  const handleHoursActualChange = (value: string) => {
+    setHoursActual(value);
+    markFieldTouched('hours_actual');
   };
 
   const handleSave = async () => {
@@ -270,8 +292,10 @@ export default function Tagesmeldung() {
       return;
     }
 
-    // Allow saving even with 0 employees - they're just reported as 0
-    // The save will work, but KPIs will show N/A or 0
+    if (!canEdit) {
+      toast.error('Die Bearbeitungsfrist für dieses Datum ist abgelaufen');
+      return;
+    }
 
     if (validityWarning) {
       toast.error('Die LV-Version ist für das gewählte Datum nicht gültig');
@@ -280,9 +304,12 @@ export default function Tagesmeldung() {
 
     setSaving(true);
 
+    // Calculate hasEntries based on touched fields
+    const hasEntries = touchedFields.size > 0;
+
     // Calculate KPIs using normalized values
-    const revPerEmployee = employeesCountNum > 0 ? actualRevenue / employeesCountNum : 0;
-    const totalHours = employeesCountNum * hoursPerEmployeeNum;
+    const revPerEmployee = employeesActualNum > 0 ? actualRevenue / employeesActualNum : 0;
+    const totalHours = employeesActualNum * hoursActualNum;
     const revPerHour = totalHours > 0 ? actualRevenue / totalHours : 0;
 
     // Create or update the report tag
@@ -302,18 +329,24 @@ export default function Tagesmeldung() {
 
     let tagId: string;
 
+    const tagData = {
+      employees_count: employeesActualNum,
+      employees_plan: employeesPlanNum,
+      hours_per_employee: hoursActualNum,
+      hours_plan: hoursPlanNum,
+      planned_revenue: plannedRevenue,
+      actual_revenue: actualRevenue,
+      rev_per_employee: revPerEmployee,
+      rev_per_hour: revPerHour,
+      has_entries: hasEntries,
+      lv_snapshot_id: currentLV?.id || null
+    };
+
     if (existingTag) {
       // Update existing
       const { error: updateError } = await supabase
         .from('leistungsmeldung_tags')
-        .update({
-          employees_count: employeesCountNum,
-          hours_per_employee: hoursPerEmployeeNum,
-          planned_revenue: plannedRevenue,
-          actual_revenue: actualRevenue,
-          rev_per_employee: revPerEmployee,
-          rev_per_hour: revPerHour
-        })
+        .update(tagData)
         .eq('id', existingTag.id);
 
       if (updateError) {
@@ -339,12 +372,7 @@ export default function Tagesmeldung() {
           date: selectedDate,
           kolonne_id: selectedKolonneId,
           foreman_id: user.id,
-          employees_count: employeesCountNum,
-          hours_per_employee: hoursPerEmployeeNum,
-          planned_revenue: plannedRevenue,
-          actual_revenue: actualRevenue,
-          rev_per_employee: revPerEmployee,
-          rev_per_hour: revPerHour
+          ...tagData
         })
         .select()
         .single();
@@ -359,7 +387,7 @@ export default function Tagesmeldung() {
       tagId = newTag.id;
     }
 
-    // Insert items - include all items, even with 0 values (they're normalized)
+    // Insert items - include all items with non-zero values
     const itemsToInsert = Array.from(reportItems.values())
       .filter(item => toNumberOrZero(item.qty_plan) > 0 || toNumberOrZero(item.qty_actual) > 0)
       .map(item => ({
@@ -397,8 +425,24 @@ export default function Tagesmeldung() {
       <div className="content-container animate-fade-in">
         {/* Header */}
         <div className="mb-6">
-          <h1 className="text-2xl font-bold text-foreground">Tagesmeldung</h1>
-          <p className="text-muted-foreground">Tägliche Leistungsmeldung erfassen</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl font-bold text-foreground">Tagesmeldung</h1>
+              <p className="text-muted-foreground">Tägliche Leistungsmeldung erfassen</p>
+            </div>
+            {isBauleiter && selectedDate && (
+              <Badge variant={canEdit ? 'default' : 'secondary'} className="flex items-center gap-1">
+                {canEdit ? (
+                  <>Bearbeitbar bis: {formatDate(editDeadline)}</>
+                ) : (
+                  <>
+                    <Lock className="w-3 h-3" />
+                    Nur Lesen
+                  </>
+                )}
+              </Badge>
+            )}
+          </div>
         </div>
 
         {loading ? (
@@ -432,7 +476,7 @@ export default function Tagesmeldung() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                   <div className="space-y-2">
                     <Label htmlFor="date">Datum *</Label>
                     <Input
@@ -440,6 +484,7 @@ export default function Tagesmeldung() {
                       type="date"
                       value={selectedDate}
                       onChange={(e) => setSelectedDate(e.target.value)}
+                      disabled={!canEdit && isBauleiter}
                     />
                   </div>
                   
@@ -449,33 +494,72 @@ export default function Tagesmeldung() {
                     onChange={setSelectedKolonneId}
                     options={kolonneOptions}
                     placeholder="Kolonne wählen..."
-                    required
+                    disabled={!canEdit && isBauleiter}
                   />
+                </div>
 
+                {/* Plan vs Actual: Employees */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
                   <div className="space-y-2">
-                    <Label htmlFor="employees"># Mitarbeiter</Label>
+                    <Label htmlFor="employeesPlan"># Mitarbeiter (PLAN)</Label>
                     <Input
-                      id="employees"
+                      id="employeesPlan"
                       type="number"
                       min={0}
-                      value={employeesCount}
-                      onChange={(e) => handleEmployeesChange(e.target.value)}
+                      value={employeesPlan}
+                      onChange={(e) => handleEmployeesPlanChange(e.target.value)}
                       placeholder="0"
+                      disabled={!canEdit && isBauleiter}
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="hours">Anzahl Stunden / MA</Label>
+                    <Label htmlFor="employeesActual"># Mitarbeiter (IST)</Label>
                     <Input
-                      id="hours"
+                      id="employeesActual"
+                      type="number"
+                      min={0}
+                      value={employeesActual}
+                      onChange={(e) => handleEmployeesActualChange(e.target.value)}
+                      placeholder="0"
+                      disabled={!canEdit && isBauleiter}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="hoursPlan">Stunden/MA (PLAN)</Label>
+                    <Input
+                      id="hoursPlan"
                       type="number"
                       min={0}
                       step={0.5}
-                      value={hoursPerEmployee}
-                      onChange={(e) => handleHoursChange(e.target.value)}
+                      value={hoursPlan}
+                      onChange={(e) => handleHoursPlanChange(e.target.value)}
                       placeholder="8"
+                      disabled={!canEdit && isBauleiter}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="hoursActual">Stunden/MA (IST)</Label>
+                    <Input
+                      id="hoursActual"
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      value={hoursActual}
+                      onChange={(e) => handleHoursActualChange(e.target.value)}
+                      placeholder="8"
+                      disabled={!canEdit && isBauleiter}
                     />
                   </div>
                 </div>
+
+                {!canEdit && isBauleiter && (
+                  <Alert variant="destructive" className="mt-4">
+                    <Lock className="h-4 w-4" />
+                    <AlertDescription>
+                      Die Bearbeitungsfrist für dieses Datum ist abgelaufen. Nur Administratoren können Änderungen vornehmen.
+                    </AlertDescription>
+                  </Alert>
+                )}
 
                 {validityWarning && (
                   <Alert variant="destructive" className="mt-4">
@@ -535,6 +619,7 @@ export default function Tagesmeldung() {
                                   onChange={(e) => handleItemChange(item.id, 'qty_plan', e.target.value)}
                                   className="w-full"
                                   placeholder="0"
+                                  disabled={!canEdit && isBauleiter}
                                 />
                               </TableCell>
                               <TableCell>
@@ -546,6 +631,7 @@ export default function Tagesmeldung() {
                                   onChange={(e) => handleItemChange(item.id, 'qty_actual', e.target.value)}
                                   className="w-full"
                                   placeholder="0"
+                                  disabled={!canEdit && isBauleiter}
                                 />
                               </TableCell>
                             </TableRow>
@@ -580,14 +666,14 @@ export default function Tagesmeldung() {
                     <div className="p-4 bg-muted rounded-lg">
                       <p className="text-sm text-muted-foreground">Umsatz/MA</p>
                       <p className="text-xl font-bold">
-                        {employeesCountNum > 0 ? formatCurrency(actualRevenue / employeesCountNum) : '—'}
+                        {employeesActualNum > 0 ? formatCurrency(actualRevenue / employeesActualNum) : '—'}
                       </p>
                     </div>
                     <div className="p-4 bg-muted rounded-lg">
                       <p className="text-sm text-muted-foreground">Umsatz/Std</p>
                       <p className="text-xl font-bold">
-                        {employeesCountNum > 0 && hoursPerEmployeeNum > 0 
-                          ? formatCurrency(actualRevenue / (employeesCountNum * hoursPerEmployeeNum)) 
+                        {employeesActualNum > 0 && hoursActualNum > 0 
+                          ? formatCurrency(actualRevenue / (employeesActualNum * hoursActualNum)) 
                           : '—'}
                       </p>
                     </div>
@@ -595,7 +681,7 @@ export default function Tagesmeldung() {
 
                   <Button 
                     onClick={handleSave} 
-                    disabled={saving || !!validityWarning || !selectedKolonneId}
+                    disabled={saving || !!validityWarning || !selectedKolonneId || (!canEdit && isBauleiter)}
                     className="w-full sm:w-auto"
                   >
                     {saving ? (

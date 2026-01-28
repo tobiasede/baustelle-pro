@@ -54,6 +54,8 @@ export type Database = {
           is_active: boolean | null
           kolonne_id: string
           lv_id: string
+          valid_from: string | null
+          valid_to: string | null
         }
         Insert: {
           assigned_at?: string | null
@@ -62,6 +64,8 @@ export type Database = {
           is_active?: boolean | null
           kolonne_id: string
           lv_id: string
+          valid_from?: string | null
+          valid_to?: string | null
         }
         Update: {
           assigned_at?: string | null
@@ -70,6 +74,8 @@ export type Database = {
           is_active?: boolean | null
           kolonne_id?: string
           lv_id?: string
+          valid_from?: string | null
+          valid_to?: string | null
         }
         Relationships: [
           {
@@ -160,10 +166,14 @@ export type Database = {
           created_at: string | null
           date: string
           employees_count: number
+          employees_plan: number | null
           foreman_id: string
+          has_entries: boolean | null
           hours_per_employee: number
+          hours_plan: number | null
           id: string
           kolonne_id: string
+          lv_snapshot_id: string | null
           planned_revenue: number | null
           rev_per_employee: number | null
           rev_per_hour: number | null
@@ -174,10 +184,14 @@ export type Database = {
           created_at?: string | null
           date: string
           employees_count: number
+          employees_plan?: number | null
           foreman_id: string
+          has_entries?: boolean | null
           hours_per_employee: number
+          hours_plan?: number | null
           id?: string
           kolonne_id: string
+          lv_snapshot_id?: string | null
           planned_revenue?: number | null
           rev_per_employee?: number | null
           rev_per_hour?: number | null
@@ -188,10 +202,14 @@ export type Database = {
           created_at?: string | null
           date?: string
           employees_count?: number
+          employees_plan?: number | null
           foreman_id?: string
+          has_entries?: boolean | null
           hours_per_employee?: number
+          hours_plan?: number | null
           id?: string
           kolonne_id?: string
+          lv_snapshot_id?: string | null
           planned_revenue?: number | null
           rev_per_employee?: number | null
           rev_per_hour?: number | null
@@ -203,6 +221,13 @@ export type Database = {
             columns: ["kolonne_id"]
             isOneToOne: false
             referencedRelation: "kolonnen"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "leistungsmeldung_tags_lv_snapshot_id_fkey"
+            columns: ["lv_snapshot_id"]
+            isOneToOne: false
+            referencedRelation: "lvs"
             referencedColumns: ["id"]
           },
         ]
@@ -255,6 +280,7 @@ export type Database = {
           id: string
           name: string
           project: string | null
+          project_id: string | null
           updated_at: string | null
           upload_file_id: string | null
           valid_from: string | null
@@ -267,6 +293,7 @@ export type Database = {
           id?: string
           name: string
           project?: string | null
+          project_id?: string | null
           updated_at?: string | null
           upload_file_id?: string | null
           valid_from?: string | null
@@ -279,13 +306,22 @@ export type Database = {
           id?: string
           name?: string
           project?: string | null
+          project_id?: string | null
           updated_at?: string | null
           upload_file_id?: string | null
           valid_from?: string | null
           valid_to?: string | null
           version?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "lvs_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       profiles: {
         Row: {
@@ -310,6 +346,36 @@ export type Database = {
           id?: string
           name?: string
           role?: Database["public"]["Enums"]["app_role"]
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      projects: {
+        Row: {
+          client: string | null
+          code: string | null
+          created_at: string | null
+          id: string
+          name: string
+          status: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          client?: string | null
+          code?: string | null
+          created_at?: string | null
+          id?: string
+          name: string
+          status?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          client?: string | null
+          code?: string | null
+          created_at?: string | null
+          id?: string
+          name?: string
+          status?: string | null
           updated_at?: string | null
         }
         Relationships: []

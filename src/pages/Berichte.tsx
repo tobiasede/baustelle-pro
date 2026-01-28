@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
 import { SelectField } from '@/components/SelectField';
 import { 
@@ -20,7 +21,8 @@ import {
   Users,
   Clock,
   FileText,
-  Calendar
+  Calendar,
+  Target
 } from 'lucide-react';
 import { 
   aggregatePeriod, 
@@ -30,7 +32,6 @@ import {
 } from '@/features/aggregation/stats';
 import { PERIOD_PRESETS, type PeriodPreset, type DailyRecord } from '@/features/aggregation/types';
 import { formatCurrency, formatDate } from '@/lib/numberUtils';
-import { toRadixSelectValue, fromRadixSelectValue } from '@/lib/selectUtils';
 
 interface Kolonne {
   id: string;
@@ -76,7 +77,7 @@ function saveFilters(filters: StoredFilters): void {
 }
 
 export default function Berichte() {
-  const { isHostOrGF } = useAuth();
+  const { isHostOrGF, isBauleiter, user } = useAuth();
   const [reports, setReports] = useState<DailyRecord[]>([]);
   const [kolonnen, setKolonnen] = useState<Kolonne[]>([]);
   const [loading, setLoading] = useState(true);
@@ -158,21 +159,58 @@ export default function Berichte() {
   }, []);
 
   const fetchFiltersData = async () => {
-    const { data: kolResult } = await supabase
-      .from('kolonnen')
-      .select('*')
-      .order('number');
-
-    if (kolResult) setKolonnen(kolResult);
+    // For Bauleiter, only fetch their assigned kolonnen
+    if (isBauleiter && user) {
+      const { data: assignments } = await supabase
+        .from('bauleiter_kolonne_assignments')
+        .select('kolonne_id')
+        .eq('user_id', user.id);
+      
+      if (assignments && assignments.length > 0) {
+        const kolonneIds = assignments.map(a => a.kolonne_id);
+        const { data: kolResult } = await supabase
+          .from('kolonnen')
+          .select('*')
+          .in('id', kolonneIds)
+          .order('number');
+        if (kolResult) setKolonnen(kolResult);
+      }
+    } else {
+      const { data: kolResult } = await supabase
+        .from('kolonnen')
+        .select('*')
+        .order('number');
+      if (kolResult) setKolonnen(kolResult);
+    }
   };
 
   const fetchReports = async () => {
     setLoading(true);
 
-    const { data, error } = await supabase
+    let query = supabase
       .from('leistungsmeldung_tags')
       .select('*, kolonnen(*)')
       .order('date', { ascending: false });
+
+    // For Bauleiter, only fetch reports for their assigned kolonnen
+    if (isBauleiter && user) {
+      const { data: assignments } = await supabase
+        .from('bauleiter_kolonne_assignments')
+        .select('kolonne_id')
+        .eq('user_id', user.id);
+      
+      if (assignments && assignments.length > 0) {
+        const kolonneIds = assignments.map(a => a.kolonne_id);
+        query = query.in('kolonne_id', kolonneIds);
+      } else {
+        // No assignments, show empty
+        setReports([]);
+        setLoading(false);
+        return;
+      }
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       toast.error('Fehler beim Laden der Berichte');
@@ -190,12 +228,20 @@ export default function Berichte() {
       return;
     }
 
-    const headers = ['Datum', 'Kolonne', 'Projekt', 'Mitarbeiter', 'Stunden/MA', 'Umsatz PLAN', 'Umsatz IST', 'Umsatz/MA', 'Umsatz/Std'];
+    const headers = [
+      'Datum', 'Kolonne', 'Projekt', 
+      'MA (PLAN)', 'MA (IST)', 
+      'Std/MA (PLAN)', 'Std/MA (IST)', 
+      'Umsatz PLAN', 'Umsatz IST', 
+      'Umsatz/MA', 'Umsatz/Std'
+    ];
     const rows = filteredReports.map(r => [
       r.date,
       r.kolonnen?.number || '',
       r.kolonnen?.project || '',
+      r.employees_plan || 0,
       r.employees_count,
+      r.hours_plan || 0,
       r.hours_per_employee,
       r.planned_revenue,
       r.actual_revenue,
@@ -225,7 +271,50 @@ export default function Berichte() {
   }));
   const projectOptions = projects.map(p => ({ label: p, value: p }));
 
-  if (!isHostOrGF) {
+  // Helper for showing values with tooltip when no data
+  const renderKPIValue = (value: number | null, format: 'currency' | 'number' | 'percent' = 'currency') => {
+    if (aggregation.contributingCrewsCount === 0) {
+      return (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="cursor-help">—</span>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>Keine Beiträge im Zeitraum</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      );
+    }
+    
+    if (value === null || !Number.isFinite(value)) {
+      return (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="cursor-help">—</span>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>Kein Planwert hinterlegt</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      );
+    }
+
+    switch (format) {
+      case 'percent':
+        return `${value.toFixed(1)}%`;
+      case 'number':
+        return value.toFixed(0);
+      default:
+        return formatCurrency(value);
+    }
+  };
+
+  // Access check: Both HOST/GF and BAULEITER can view (BAULEITER only sees their data)
+  if (!isHostOrGF && !isBauleiter) {
     return (
       <AppLayout>
         <div className="content-container">
@@ -335,8 +424,8 @@ export default function Berichte() {
           </CardContent>
         </Card>
 
-        {/* KPI Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
+        {/* KPI Cards - Row 1: Crews and Revenue */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4 mb-4">
           {/* Contributing Crews */}
           <Card className="card-elevated">
             <CardContent className="pt-6">
@@ -410,9 +499,7 @@ export default function Berichte() {
                 <div>
                   <p className="text-sm font-medium text-muted-foreground">Ø Umsatz/MA/AT</p>
                   <p className="text-2xl font-bold">
-                    {aggregation.contributingCrewsCount > 0 
-                      ? formatCurrency(kpis.avgRevPerEmployee) 
-                      : '—'}
+                    {renderKPIValue(kpis.avgRevPerEmployee)}
                   </p>
                 </div>
                 <div className="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center">
@@ -429,13 +516,80 @@ export default function Berichte() {
                 <div>
                   <p className="text-sm font-medium text-muted-foreground">Ø Umsatz/MA/Std</p>
                   <p className="text-2xl font-bold">
-                    {aggregation.contributingCrewsCount > 0 
-                      ? formatCurrency(kpis.avgRevPerHour) 
-                      : '—'}
+                    {renderKPIValue(kpis.avgRevPerHour)}
                   </p>
                 </div>
                 <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
                   <Clock className="w-5 h-5 text-primary" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* KPI Cards - Row 2: Employees and Hours Plan vs Actual */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          {/* Employees Plan */}
+          <Card className="card-elevated">
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">Mitarbeiter (PLAN)</p>
+                  <p className="text-2xl font-bold">{aggregation.totals.totalEmployeesPlan}</p>
+                </div>
+                <div className="w-10 h-10 rounded-lg bg-info/10 flex items-center justify-center">
+                  <Target className="w-5 h-5 text-info" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Employees Actual */}
+          <Card className="card-elevated">
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">Mitarbeiter (IST)</p>
+                  <p className="text-2xl font-bold">{aggregation.totals.totalEmployees}</p>
+                  <p className={`text-xs ${kpis.employeesDelta >= 0 ? 'text-success' : 'text-destructive'}`}>
+                    Δ {kpis.employeesDelta >= 0 ? '+' : ''}{kpis.employeesDelta} ({renderKPIValue(kpis.employeesFulfillment, 'percent')})
+                  </p>
+                </div>
+                <div className="w-10 h-10 rounded-lg bg-success/10 flex items-center justify-center">
+                  <Users className="w-5 h-5 text-success" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Hours Plan */}
+          <Card className="card-elevated">
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">Stunden (PLAN)</p>
+                  <p className="text-2xl font-bold">{aggregation.totals.totalHoursPlan.toFixed(1)}</p>
+                </div>
+                <div className="w-10 h-10 rounded-lg bg-info/10 flex items-center justify-center">
+                  <Target className="w-5 h-5 text-info" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Hours Actual */}
+          <Card className="card-elevated">
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">Stunden (IST)</p>
+                  <p className="text-2xl font-bold">{aggregation.totals.totalHours.toFixed(1)}</p>
+                  <p className={`text-xs ${kpis.hoursDelta >= 0 ? 'text-success' : 'text-destructive'}`}>
+                    Δ {kpis.hoursDelta >= 0 ? '+' : ''}{kpis.hoursDelta.toFixed(1)} ({renderKPIValue(kpis.hoursFulfillment, 'percent')})
+                  </p>
+                </div>
+                <div className="w-10 h-10 rounded-lg bg-success/10 flex items-center justify-center">
+                  <Clock className="w-5 h-5 text-success" />
                 </div>
               </div>
             </CardContent>
@@ -474,8 +628,10 @@ export default function Berichte() {
                       <TableHead>Datum</TableHead>
                       <TableHead>Kolonne</TableHead>
                       <TableHead>Projekt</TableHead>
-                      <TableHead className="text-center">MA</TableHead>
-                      <TableHead className="text-center">Std/MA</TableHead>
+                      <TableHead className="text-center">MA (PLAN)</TableHead>
+                      <TableHead className="text-center">MA (IST)</TableHead>
+                      <TableHead className="text-center">Std/MA (PLAN)</TableHead>
+                      <TableHead className="text-center">Std/MA (IST)</TableHead>
                       <TableHead className="text-right">PLAN (€)</TableHead>
                       <TableHead className="text-right">IST (€)</TableHead>
                       <TableHead className="text-right">€/MA</TableHead>
@@ -485,18 +641,20 @@ export default function Berichte() {
                   <TableBody>
                     {filteredReports.map((report) => (
                       <TableRow key={report.id}>
-                        <TableCell>{formatDate(report.date)}</TableCell>
-                        <TableCell className="font-medium">{report.kolonnen?.number}</TableCell>
-                        <TableCell>{report.kolonnen?.project || '-'}</TableCell>
+                        <TableCell>{formatDate(new Date(report.date))}</TableCell>
+                        <TableCell className="font-medium">{report.kolonnen?.number || '—'}</TableCell>
+                        <TableCell>{report.kolonnen?.project || '—'}</TableCell>
+                        <TableCell className="text-center">{report.employees_plan || 0}</TableCell>
                         <TableCell className="text-center">{report.employees_count}</TableCell>
-                        <TableCell className="text-center">{Number(report.hours_per_employee).toFixed(1)}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(Number(report.planned_revenue))}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(Number(report.actual_revenue))}</TableCell>
+                        <TableCell className="text-center">{report.hours_plan || 0}</TableCell>
+                        <TableCell className="text-center">{report.hours_per_employee}</TableCell>
+                        <TableCell className="text-right">{formatCurrency(report.planned_revenue)}</TableCell>
+                        <TableCell className="text-right">{formatCurrency(report.actual_revenue)}</TableCell>
                         <TableCell className="text-right">
-                          {report.rev_per_employee ? formatCurrency(Number(report.rev_per_employee)) : '—'}
+                          {report.rev_per_employee ? formatCurrency(report.rev_per_employee) : '—'}
                         </TableCell>
                         <TableCell className="text-right">
-                          {report.rev_per_hour ? formatCurrency(Number(report.rev_per_hour)) : '—'}
+                          {report.rev_per_hour ? formatCurrency(report.rev_per_hour) : '—'}
                         </TableCell>
                       </TableRow>
                     ))}
