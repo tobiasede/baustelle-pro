@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
@@ -6,11 +6,12 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { toast } from 'sonner';
 import { Loader2, AlertCircle, ClipboardList, Save, AlertTriangle, Euro } from 'lucide-react';
+import { SelectField } from '@/components/SelectField';
+import { toNumberOrZero, formatCurrency } from '@/lib/numberUtils';
 
 interface Kolonne {
   id: string;
@@ -52,14 +53,21 @@ export default function Tagesmeldung() {
 
   // Form state
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [selectedKolonneId, setSelectedKolonneId] = useState<string>('');
-  const [employeesCount, setEmployeesCount] = useState<number>(0);
-  const [hoursPerEmployee, setHoursPerEmployee] = useState<number>(8);
+  const [selectedKolonneId, setSelectedKolonneId] = useState<string | undefined>(undefined);
+  const [employeesCount, setEmployeesCount] = useState<string>('');
+  const [hoursPerEmployee, setHoursPerEmployee] = useState<string>('8');
   const [reportItems, setReportItems] = useState<Map<string, ReportItem>>(new Map());
+
+  // Track which fields have been touched (for hasEntries calculation)
+  const [touchedFields, setTouchedFields] = useState<Set<string>>(new Set());
 
   // Computed values
   const [plannedRevenue, setPlannedRevenue] = useState<number>(0);
   const [actualRevenue, setActualRevenue] = useState<number>(0);
+
+  // Derived numeric values (treat empty as 0)
+  const employeesCountNum = toNumberOrZero(employeesCount);
+  const hoursPerEmployeeNum = toNumberOrZero(hoursPerEmployee);
 
   useEffect(() => {
     fetchKolonnen();
@@ -89,14 +97,18 @@ export default function Tagesmeldung() {
     reportItems.forEach((item) => {
       const lvItem = lvItems.find(lvi => lvi.id === item.lv_item_id);
       if (lvItem) {
-        planned += item.qty_plan * Number(lvItem.unit_price);
-        actual += item.qty_actual * Number(lvItem.unit_price);
+        planned += toNumberOrZero(item.qty_plan) * Number(lvItem.unit_price);
+        actual += toNumberOrZero(item.qty_actual) * Number(lvItem.unit_price);
       }
     });
 
     setPlannedRevenue(planned);
     setActualRevenue(actual);
   }, [reportItems, lvItems]);
+
+  const markFieldTouched = useCallback((fieldId: string) => {
+    setTouchedFields(prev => new Set(prev).add(fieldId));
+  }, []);
 
   const fetchKolonnen = async () => {
     setLoading(true);
@@ -209,6 +221,8 @@ export default function Tagesmeldung() {
         });
       });
       setReportItems(newReportItems);
+      // Reset touched fields when loading new data
+      setTouchedFields(new Set());
     }
   };
 
@@ -228,13 +242,26 @@ export default function Tagesmeldung() {
     setValidityWarning(warning);
   };
 
-  const handleItemChange = (itemId: string, field: 'qty_plan' | 'qty_actual', value: number) => {
+  const handleItemChange = (itemId: string, field: 'qty_plan' | 'qty_actual', value: string) => {
+    const numValue = toNumberOrZero(value);
     const newReportItems = new Map(reportItems);
     const item = newReportItems.get(itemId);
     if (item) {
-      newReportItems.set(itemId, { ...item, [field]: value });
+      newReportItems.set(itemId, { ...item, [field]: numValue });
       setReportItems(newReportItems);
     }
+    // Mark this field as touched
+    markFieldTouched(`item_${itemId}_${field}`);
+  };
+
+  const handleEmployeesChange = (value: string) => {
+    setEmployeesCount(value);
+    markFieldTouched('employees_count');
+  };
+
+  const handleHoursChange = (value: string) => {
+    setHoursPerEmployee(value);
+    markFieldTouched('hours_per_employee');
   };
 
   const handleSave = async () => {
@@ -243,10 +270,8 @@ export default function Tagesmeldung() {
       return;
     }
 
-    if (employeesCount <= 0) {
-      toast.error('Bitte geben Sie die Anzahl der Mitarbeiter an');
-      return;
-    }
+    // Allow saving even with 0 employees - they're just reported as 0
+    // The save will work, but KPIs will show N/A or 0
 
     if (validityWarning) {
       toast.error('Die LV-Version ist für das gewählte Datum nicht gültig');
@@ -255,9 +280,9 @@ export default function Tagesmeldung() {
 
     setSaving(true);
 
-    // Calculate KPIs
-    const revPerEmployee = employeesCount > 0 ? actualRevenue / employeesCount : 0;
-    const totalHours = employeesCount * hoursPerEmployee;
+    // Calculate KPIs using normalized values
+    const revPerEmployee = employeesCountNum > 0 ? actualRevenue / employeesCountNum : 0;
+    const totalHours = employeesCountNum * hoursPerEmployeeNum;
     const revPerHour = totalHours > 0 ? actualRevenue / totalHours : 0;
 
     // Create or update the report tag
@@ -282,8 +307,8 @@ export default function Tagesmeldung() {
       const { error: updateError } = await supabase
         .from('leistungsmeldung_tags')
         .update({
-          employees_count: employeesCount,
-          hours_per_employee: hoursPerEmployee,
+          employees_count: employeesCountNum,
+          hours_per_employee: hoursPerEmployeeNum,
           planned_revenue: plannedRevenue,
           actual_revenue: actualRevenue,
           rev_per_employee: revPerEmployee,
@@ -314,8 +339,8 @@ export default function Tagesmeldung() {
           date: selectedDate,
           kolonne_id: selectedKolonneId,
           foreman_id: user.id,
-          employees_count: employeesCount,
-          hours_per_employee: hoursPerEmployee,
+          employees_count: employeesCountNum,
+          hours_per_employee: hoursPerEmployeeNum,
           planned_revenue: plannedRevenue,
           actual_revenue: actualRevenue,
           rev_per_employee: revPerEmployee,
@@ -334,14 +359,14 @@ export default function Tagesmeldung() {
       tagId = newTag.id;
     }
 
-    // Insert items
+    // Insert items - include all items, even with 0 values (they're normalized)
     const itemsToInsert = Array.from(reportItems.values())
-      .filter(item => item.qty_plan > 0 || item.qty_actual > 0)
+      .filter(item => toNumberOrZero(item.qty_plan) > 0 || toNumberOrZero(item.qty_actual) > 0)
       .map(item => ({
         leistungsmeldung_tag_id: tagId,
         lv_item_id: item.lv_item_id,
-        qty_plan: item.qty_plan,
-        qty_actual: item.qty_actual
+        qty_plan: toNumberOrZero(item.qty_plan),
+        qty_actual: toNumberOrZero(item.qty_actual)
       }));
 
     if (itemsToInsert.length > 0) {
@@ -361,9 +386,11 @@ export default function Tagesmeldung() {
     setSaving(false);
   };
 
-  const formatCurrency = (value: number): string => {
-    return new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(value);
-  };
+  // Build options for SelectField
+  const kolonneOptions = kolonnen.map(k => ({
+    label: `${k.number}${k.project ? ` (${k.project})` : ''}`,
+    value: k.id
+  }));
 
   return (
     <AppLayout>
@@ -415,29 +442,25 @@ export default function Tagesmeldung() {
                       onChange={(e) => setSelectedDate(e.target.value)}
                     />
                   </div>
+                  
+                  <SelectField
+                    label="Kolonne *"
+                    value={selectedKolonneId}
+                    onChange={setSelectedKolonneId}
+                    options={kolonneOptions}
+                    placeholder="Kolonne wählen..."
+                    required
+                  />
+
                   <div className="space-y-2">
-                    <Label htmlFor="kolonne">Kolonne *</Label>
-                    <Select value={selectedKolonneId} onValueChange={setSelectedKolonneId}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Kolonne wählen..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {kolonnen.map((kolonne) => (
-                          <SelectItem key={kolonne.id} value={kolonne.id}>
-                            {kolonne.number} {kolonne.project && `(${kolonne.project})`}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="employees"># Mitarbeiter *</Label>
+                    <Label htmlFor="employees"># Mitarbeiter</Label>
                     <Input
                       id="employees"
                       type="number"
                       min={0}
                       value={employeesCount}
-                      onChange={(e) => setEmployeesCount(parseInt(e.target.value) || 0)}
+                      onChange={(e) => handleEmployeesChange(e.target.value)}
+                      placeholder="0"
                     />
                   </div>
                   <div className="space-y-2">
@@ -448,7 +471,8 @@ export default function Tagesmeldung() {
                       min={0}
                       step={0.5}
                       value={hoursPerEmployee}
-                      onChange={(e) => setHoursPerEmployee(parseFloat(e.target.value) || 0)}
+                      onChange={(e) => handleHoursChange(e.target.value)}
+                      placeholder="8"
                     />
                   </div>
                 </div>
@@ -508,7 +532,7 @@ export default function Tagesmeldung() {
                                   min={0}
                                   step={0.001}
                                   value={reportItem?.qty_plan || ''}
-                                  onChange={(e) => handleItemChange(item.id, 'qty_plan', parseFloat(e.target.value) || 0)}
+                                  onChange={(e) => handleItemChange(item.id, 'qty_plan', e.target.value)}
                                   className="w-full"
                                   placeholder="0"
                                 />
@@ -519,7 +543,7 @@ export default function Tagesmeldung() {
                                   min={0}
                                   step={0.001}
                                   value={reportItem?.qty_actual || ''}
-                                  onChange={(e) => handleItemChange(item.id, 'qty_actual', parseFloat(e.target.value) || 0)}
+                                  onChange={(e) => handleItemChange(item.id, 'qty_actual', e.target.value)}
                                   className="w-full"
                                   placeholder="0"
                                 />
@@ -556,22 +580,22 @@ export default function Tagesmeldung() {
                     <div className="p-4 bg-muted rounded-lg">
                       <p className="text-sm text-muted-foreground">Umsatz/MA</p>
                       <p className="text-xl font-bold">
-                        {employeesCount > 0 ? formatCurrency(actualRevenue / employeesCount) : 'N/A'}
+                        {employeesCountNum > 0 ? formatCurrency(actualRevenue / employeesCountNum) : '—'}
                       </p>
                     </div>
                     <div className="p-4 bg-muted rounded-lg">
                       <p className="text-sm text-muted-foreground">Umsatz/Std</p>
                       <p className="text-xl font-bold">
-                        {employeesCount > 0 && hoursPerEmployee > 0 
-                          ? formatCurrency(actualRevenue / (employeesCount * hoursPerEmployee)) 
-                          : 'N/A'}
+                        {employeesCountNum > 0 && hoursPerEmployeeNum > 0 
+                          ? formatCurrency(actualRevenue / (employeesCountNum * hoursPerEmployeeNum)) 
+                          : '—'}
                       </p>
                     </div>
                   </div>
 
                   <Button 
                     onClick={handleSave} 
-                    disabled={saving || !!validityWarning}
+                    disabled={saving || !!validityWarning || !selectedKolonneId}
                     className="w-full sm:w-auto"
                   >
                     {saving ? (
