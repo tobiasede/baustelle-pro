@@ -4,11 +4,11 @@ import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import { Loader2, AlertCircle, Users, Check } from 'lucide-react';
+import { SelectField } from '@/components/SelectField';
 
 interface Kolonne {
   id: string;
@@ -81,7 +81,7 @@ export default function KolonnenZuweisung() {
     return assignment?.lv_id;
   };
 
-  const handleAssignmentChange = async (kolonneId: string, lvId: string | null) => {
+  const handleAssignmentChange = async (kolonneId: string, lvId: string | undefined) => {
     setSaving(kolonneId);
 
     // First, deactivate any existing active assignment
@@ -151,6 +151,13 @@ export default function KolonnenZuweisung() {
     return `${lv.name} (v${lv.version})`;
   };
 
+  const getLVOptions = () => {
+    return lvs.map(lv => ({
+      label: getLVDisplay(lv) + (lv.valid_from && lv.valid_to ? ` (${lv.valid_from} - ${lv.valid_to})` : ''),
+      value: lv.id,
+    }));
+  };
+
   if (!isHostOrGF) {
     return (
       <AppLayout>
@@ -217,7 +224,6 @@ export default function KolonnenZuweisung() {
                   <TableBody>
                     {kolonnen.map((kolonne) => {
                       const currentLvId = getCurrentAssignment(kolonne.id);
-                      const currentLV = lvs.find(lv => lv.id === currentLvId);
                       const isSaving = saving === kolonne.id;
 
                       return (
@@ -225,30 +231,16 @@ export default function KolonnenZuweisung() {
                           <TableCell className="font-medium">{kolonne.number}</TableCell>
                           <TableCell>{kolonne.project || '-'}</TableCell>
                           <TableCell className="min-w-[300px]">
-                            <Select
-                              value={currentLvId || '__none__'}
-                              onValueChange={(value) => handleAssignmentChange(kolonne.id, value === '__none__' ? null : value)}
+                            <SelectField
+                              value={currentLvId}
+                              onChange={(value) => handleAssignmentChange(kolonne.id, value)}
+                              options={getLVOptions()}
+                              placeholder="LV auswählen..."
                               disabled={isSaving}
-                            >
-                              <SelectTrigger className="w-full">
-                                <SelectValue placeholder="LV auswählen...">
-                                  {currentLV ? getLVDisplay(currentLV) : 'Kein LV zugewiesen'}
-                                </SelectValue>
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="__none__">Keine Zuweisung</SelectItem>
-                                {lvs.map((lv) => (
-                                  <SelectItem key={lv.id} value={lv.id}>
-                                    {getLVDisplay(lv)}
-                                    {lv.valid_from && lv.valid_to && (
-                                      <span className="text-muted-foreground ml-2">
-                                        ({lv.valid_from} - {lv.valid_to})
-                                      </span>
-                                    )}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                              allowEmpty
+                              emptyLabel="Keine Zuweisung"
+                              triggerClassName="w-full"
+                            />
                           </TableCell>
                           <TableCell className="text-right">
                             {isSaving ? (

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
@@ -6,13 +6,30 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '@/components/ui/dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
-import { Plus, Upload, FileSpreadsheet, Trash2, Edit, Eye, Loader2, AlertCircle } from 'lucide-react';
-import * as XLSX from 'xlsx';
+import { Plus, Upload, FileSpreadsheet, Trash2, Eye, Loader2, AlertCircle, Download, CheckCircle, XCircle, AlertTriangle } from 'lucide-react';
+import { SelectField } from '@/components/SelectField';
+import {
+  type CanonicalHeader,
+  type LVRow,
+  ALL_HEADERS,
+  REQUIRED_HEADERS,
+  saveMappingToStorage,
+} from '@/features/lv/importSchema';
+import {
+  parseFile,
+  parseSheet,
+  validateAndTransform,
+  downloadTemplate,
+  type ParsedFile,
+  type ValidationError,
+  type ImportResult,
+} from '@/features/lv/importService';
 
 interface LV {
   id: string;
@@ -34,18 +51,7 @@ interface LVItem {
   category: string | null;
 }
 
-interface ExcelColumn {
-  index: number;
-  header: string;
-}
-
-interface ColumnMapping {
-  position_code: number | null;
-  short_text: number | null;
-  unit: number | null;
-  unit_price: number | null;
-  category: number | null;
-}
+type ImportStep = 'upload' | 'sheet' | 'mapping' | 'validation' | 'confirm';
 
 export default function LVVerwaltung() {
   const { user, isHostOrGF } = useAuth();
@@ -63,22 +69,22 @@ export default function LVVerwaltung() {
   const [newLVValidFrom, setNewLVValidFrom] = useState('');
   const [newLVValidTo, setNewLVValidTo] = useState('');
 
-  // Excel upload dialog
+  // Upload dialog state
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
-  const [uploadStep, setUploadStep] = useState<'upload' | 'sheet' | 'mapping'>('upload');
-  const [excelWorkbook, setExcelWorkbook] = useState<XLSX.WorkBook | null>(null);
-  const [sheetNames, setSheetNames] = useState<string[]>([]);
-  const [selectedSheet, setSelectedSheet] = useState<string>('');
-  const [excelColumns, setExcelColumns] = useState<ExcelColumn[]>([]);
-  const [columnMapping, setColumnMapping] = useState<ColumnMapping>({
-    position_code: null,
-    short_text: null,
-    unit: null,
-    unit_price: null,
-    category: null
-  });
-  const [excelData, setExcelData] = useState<any[]>([]);
+  const [uploadStep, setUploadStep] = useState<ImportStep>('upload');
   const [uploadLVId, setUploadLVId] = useState<string | null>(null);
+  const [currentFile, setCurrentFile] = useState<File | null>(null);
+  const [parsedFile, setParsedFile] = useState<ParsedFile | null>(null);
+  const [mapping, setMapping] = useState<Record<CanonicalHeader, number | null>>({
+    'Positions-ID': null,
+    'Kurztext': null,
+    'Einheit': null,
+    'EP': null,
+    'Kategorie': null,
+  });
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [generateAutoIds, setGenerateAutoIds] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   // View items dialog
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
@@ -175,121 +181,197 @@ export default function LVVerwaltung() {
     }
   };
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>, lvId: string) => {
+  const resetUpload = useCallback(() => {
+    setUploadStep('upload');
+    setCurrentFile(null);
+    setParsedFile(null);
+    setMapping({
+      'Positions-ID': null,
+      'Kurztext': null,
+      'Einheit': null,
+      'EP': null,
+      'Kategorie': null,
+    });
+    setImportResult(null);
+    setUploadLVId(null);
+    setGenerateAutoIds(false);
+    setIsProcessing(false);
+  }, []);
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>, lvId: string) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     setUploadLVId(lvId);
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const data = new Uint8Array(e.target?.result as ArrayBuffer);
-      const workbook = XLSX.read(data, { type: 'array' });
-      setExcelWorkbook(workbook);
-      setSheetNames(workbook.SheetNames);
-      setUploadStep('sheet');
-      setUploadDialogOpen(true);
-    };
-    reader.readAsArrayBuffer(file);
+    setCurrentFile(file);
+    setIsProcessing(true);
+    setUploadDialogOpen(true);
+
+    try {
+      const parsed = await parseFile(file);
+      setParsedFile(parsed);
+      setMapping(parsed.mapping);
+
+      if (parsed.sheets.length > 1) {
+        // Multiple sheets - let user choose
+        setUploadStep('sheet');
+      } else if (parsed.isCanonical) {
+        // Canonical schema - skip mapping, go to validation
+        runValidation(parsed.rawData, parsed.mapping);
+      } else {
+        // Need mapping
+        setUploadStep('mapping');
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Fehler beim Lesen der Datei');
+      resetUpload();
+      setUploadDialogOpen(false);
+    } finally {
+      setIsProcessing(false);
+    }
+    
+    // Reset file input
+    event.target.value = '';
   };
 
-  const handleSheetSelect = (sheetName: string) => {
-    setSelectedSheet(sheetName);
-    if (!excelWorkbook) return;
+  const handleSheetSelect = async (sheetName: string | undefined) => {
+    if (!sheetName || !currentFile) return;
 
-    const worksheet = excelWorkbook.Sheets[sheetName];
-    const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
-    
-    if (jsonData.length === 0) {
-      toast.error('Das Tabellenblatt ist leer');
-      return;
+    setIsProcessing(true);
+    try {
+      const result = await parseSheet(currentFile, sheetName);
+      setParsedFile(prev => prev ? {
+        ...prev,
+        selectedSheet: sheetName,
+        headers: result.headers,
+        rawData: result.rawData,
+        mapping: result.mapping,
+        isCanonical: result.isCanonical,
+      } : null);
+      setMapping(result.mapping);
+
+      if (result.isCanonical) {
+        runValidation(result.rawData, result.mapping);
+      } else {
+        setUploadStep('mapping');
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Fehler beim Lesen des Tabellenblatts');
+    } finally {
+      setIsProcessing(false);
     }
+  };
 
-    const headers = jsonData[0] as string[];
-    const columns: ExcelColumn[] = headers.map((header, index) => ({
-      index,
-      header: String(header || `Spalte ${index + 1}`)
+  const handleMappingChange = (target: CanonicalHeader, value: string | undefined) => {
+    setMapping(prev => ({
+      ...prev,
+      [target]: value !== undefined ? parseInt(value) : null,
     }));
+  };
 
-    setExcelColumns(columns);
-    setExcelData(jsonData.slice(1));
-    setUploadStep('mapping');
+  const runValidation = useCallback((rawData: unknown[][], currentMapping: Record<CanonicalHeader, number | null>) => {
+    const result = validateAndTransform(rawData, currentMapping, { generateAutoIds });
+    setImportResult(result);
+    setUploadStep('validation');
+  }, [generateAutoIds]);
+
+  const handleValidate = () => {
+    if (!parsedFile) return;
+    
+    // Save mapping for future use
+    saveMappingToStorage(parsedFile.storedMappingKey, mapping);
+    
+    runValidation(parsedFile.rawData, mapping);
   };
 
   const handleImport = async () => {
-    if (columnMapping.position_code === null || 
-        columnMapping.short_text === null || 
-        columnMapping.unit === null || 
-        columnMapping.unit_price === null) {
-      toast.error('Bitte ordnen Sie alle Pflichtfelder zu');
-      return;
-    }
+    if (!importResult || !uploadLVId || importResult.rows.length === 0) return;
 
-    if (!uploadLVId) return;
-
-    const items = excelData
-      .filter(row => row[columnMapping.position_code!] && row[columnMapping.unit_price!])
-      .map(row => ({
+    setIsProcessing(true);
+    
+    try {
+      const items = importResult.rows.map(row => ({
         lv_id: uploadLVId,
-        position_code: String(row[columnMapping.position_code!]),
-        short_text: String(row[columnMapping.short_text!] || ''),
-        unit: String(row[columnMapping.unit!] || ''),
-        unit_price: parseFloat(String(row[columnMapping.unit_price!]).replace(',', '.')) || 0,
-        category: columnMapping.category !== null ? String(row[columnMapping.category] || '') : null
-      }))
-      .filter(item => item.unit_price > 0);
+        position_code: row['Positions-ID'],
+        short_text: row['Kurztext'],
+        unit: row['Einheit'],
+        unit_price: row['EP'],
+        category: row['Kategorie'] || null,
+      }));
 
-    if (items.length === 0) {
-      toast.error('Keine gültigen Daten zum Importieren gefunden');
-      return;
-    }
+      const { error } = await supabase
+        .from('lv_items')
+        .insert(items);
 
-    // Check for duplicates
-    const positionCodes = items.map(i => i.position_code);
-    const duplicates = positionCodes.filter((code, index) => positionCodes.indexOf(code) !== index);
-    if (duplicates.length > 0) {
-      toast.error(`Doppelte Positions-IDs gefunden: ${[...new Set(duplicates)].join(', ')}`);
-      return;
-    }
-
-    const { error } = await supabase
-      .from('lv_items')
-      .insert(items);
-
-    if (error) {
-      if (error.code === '23505') {
-        toast.error('Einige Positions-IDs existieren bereits im LV');
+      if (error) {
+        if (error.code === '23505') {
+          toast.error('Einige Positions-IDs existieren bereits im LV');
+        } else {
+          toast.error('Fehler beim Importieren der Daten');
+        }
+        console.error(error);
       } else {
-        toast.error('Fehler beim Importieren der Daten');
+        toast.success(`${items.length} Positionen erfolgreich importiert`);
+        resetUpload();
+        setUploadDialogOpen(false);
       }
+    } catch (error) {
+      toast.error('Unerwarteter Fehler beim Import');
       console.error(error);
-    } else {
-      toast.success(`${items.length} Positionen erfolgreich importiert`);
-      resetUpload();
-      setUploadDialogOpen(false);
+    } finally {
+      setIsProcessing(false);
     }
-  };
-
-  const resetUpload = () => {
-    setUploadStep('upload');
-    setExcelWorkbook(null);
-    setSheetNames([]);
-    setSelectedSheet('');
-    setExcelColumns([]);
-    setColumnMapping({
-      position_code: null,
-      short_text: null,
-      unit: null,
-      unit_price: null,
-      category: null
-    });
-    setExcelData([]);
-    setUploadLVId(null);
   };
 
   const handleViewItems = (lv: LV) => {
     setSelectedLV(lv);
     fetchLVItems(lv.id);
     setViewDialogOpen(true);
+  };
+
+  const getMappingOptions = () => {
+    if (!parsedFile) return [];
+    return parsedFile.headers.map((header, index) => ({
+      label: header || `Spalte ${index + 1}`,
+      value: index,
+    }));
+  };
+
+  const getStepTitle = () => {
+    switch (uploadStep) {
+      case 'sheet': return 'Tabellenblatt wählen';
+      case 'mapping': return 'Spalten zuordnen';
+      case 'validation': return 'Validierungsergebnis';
+      case 'confirm': return 'Import bestätigen';
+      default: return 'LV hochladen';
+    }
+  };
+
+  const renderErrors = (errors: ValidationError[], maxShow: number = 10) => {
+    const shown = errors.slice(0, maxShow);
+    const remaining = errors.length - maxShow;
+
+    return (
+      <div className="space-y-1">
+        {shown.map((err, idx) => (
+          <div key={idx} className="text-sm flex items-start gap-2">
+            {err.severity === 'error' ? (
+              <XCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 text-warning shrink-0 mt-0.5" />
+            )}
+            <span>
+              <strong>Zeile {err.row}:</strong> {err.column} - {err.message}
+            </span>
+          </div>
+        ))}
+        {remaining > 0 && (
+          <div className="text-sm text-muted-foreground pl-6">
+            ... und {remaining} weitere {errors[0]?.severity === 'error' ? 'Fehler' : 'Warnungen'}
+          </div>
+        )}
+      </div>
+    );
   };
 
   if (!isHostOrGF) {
@@ -323,10 +405,20 @@ export default function LVVerwaltung() {
             <h1 className="text-2xl font-bold text-foreground">LV-Verwaltung</h1>
             <p className="text-muted-foreground">Leistungsverzeichnisse erstellen und verwalten</p>
           </div>
-          <Button onClick={() => setCreateDialogOpen(true)} className="w-full sm:w-auto">
-            <Plus className="w-4 h-4 mr-2" />
-            Neues LV anlegen
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => downloadTemplate('xlsx')} size="sm">
+              <Download className="w-4 h-4 mr-2" />
+              Excel-Vorlage
+            </Button>
+            <Button variant="outline" onClick={() => downloadTemplate('csv')} size="sm">
+              <Download className="w-4 h-4 mr-2" />
+              CSV-Vorlage
+            </Button>
+            <Button onClick={() => setCreateDialogOpen(true)}>
+              <Plus className="w-4 h-4 mr-2" />
+              Neues LV
+            </Button>
+          </div>
         </div>
 
         {/* LV List */}
@@ -380,7 +472,7 @@ export default function LVVerwaltung() {
                             <label className="cursor-pointer">
                               <input
                                 type="file"
-                                accept=".xlsx,.xls"
+                                accept=".xlsx,.xls,.csv"
                                 className="hidden"
                                 onChange={(e) => handleFileUpload(e, lv.id)}
                               />
@@ -475,134 +567,188 @@ export default function LVVerwaltung() {
 
         {/* Upload Dialog */}
         <Dialog open={uploadDialogOpen} onOpenChange={(open) => { if (!open) resetUpload(); setUploadDialogOpen(open); }}>
-          <DialogContent className="sm:max-w-lg">
+          <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-hidden flex flex-col">
             <DialogHeader>
-              <DialogTitle>
-                {uploadStep === 'sheet' ? 'Tabellenblatt wählen' : 
-                 uploadStep === 'mapping' ? 'Spalten zuordnen' : 'LV hochladen'}
-              </DialogTitle>
+              <DialogTitle>{getStepTitle()}</DialogTitle>
+              {parsedFile && (
+                <DialogDescription>
+                  {parsedFile.fileName} • {parsedFile.fileType === 'csv' ? 'CSV' : 'Excel'}
+                </DialogDescription>
+              )}
             </DialogHeader>
 
-            {uploadStep === 'sheet' && (
-              <div className="space-y-4 py-4">
-                <Label>Tabellenblatt auswählen</Label>
-                <Select value={selectedSheet} onValueChange={handleSheetSelect}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Tabellenblatt wählen..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {sheetNames.map((name) => (
-                      <SelectItem key={name} value={name}>{name}</SelectItem>
+            <div className="flex-1 overflow-y-auto py-4">
+              {isProcessing && (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+                  <span className="ml-2 text-muted-foreground">Verarbeite...</span>
+                </div>
+              )}
+
+              {/* Step: Sheet Selection */}
+              {uploadStep === 'sheet' && parsedFile && !isProcessing && (
+                <SelectField
+                  label="Tabellenblatt auswählen"
+                  value={parsedFile.selectedSheet}
+                  onChange={handleSheetSelect}
+                  options={parsedFile.sheets.map(name => ({ label: name, value: name }))}
+                  placeholder="Tabellenblatt wählen..."
+                />
+              )}
+
+              {/* Step: Mapping */}
+              {uploadStep === 'mapping' && parsedFile && !isProcessing && (
+                <div className="space-y-4">
+                  {parsedFile.isCanonical && (
+                    <Alert>
+                      <CheckCircle className="h-4 w-4" />
+                      <AlertTitle>Kanonisches Schema erkannt</AlertTitle>
+                      <AlertDescription>
+                        Die Datei verwendet das Standard-Schema. Die Spalten wurden automatisch zugeordnet.
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  <div className="space-y-3">
+                    {REQUIRED_HEADERS.map((header) => (
+                      <SelectField
+                        key={header}
+                        label={header}
+                        required
+                        value={mapping[header]}
+                        onChange={(v) => handleMappingChange(header, v)}
+                        options={getMappingOptions()}
+                        placeholder="Spalte wählen..."
+                        allowEmpty
+                        emptyLabel="Nicht zugeordnet"
+                      />
                     ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-
-            {uploadStep === 'mapping' && (
-              <div className="space-y-4 py-4 max-h-96 overflow-y-auto">
-                <div className="space-y-3">
-                  <div className="space-y-2">
-                    <Label>Positions-ID *</Label>
-                    <Select 
-                      value={columnMapping.position_code?.toString() || ''} 
-                      onValueChange={(v) => setColumnMapping(prev => ({ ...prev, position_code: parseInt(v) }))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Spalte wählen..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {excelColumns.map((col) => (
-                          <SelectItem key={col.index} value={col.index.toString()}>{col.header}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    
+                    <SelectField
+                      label="Kategorie (optional)"
+                      value={mapping['Kategorie']}
+                      onChange={(v) => handleMappingChange('Kategorie', v)}
+                      options={getMappingOptions()}
+                      placeholder="Spalte wählen..."
+                      allowEmpty
+                      emptyLabel="Nicht zugeordnet"
+                    />
                   </div>
 
-                  <div className="space-y-2">
-                    <Label>Kurztext *</Label>
-                    <Select 
-                      value={columnMapping.short_text?.toString() || ''} 
-                      onValueChange={(v) => setColumnMapping(prev => ({ ...prev, short_text: parseInt(v) }))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Spalte wählen..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {excelColumns.map((col) => (
-                          <SelectItem key={col.index} value={col.index.toString()}>{col.header}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                  <div className="flex items-center space-x-2 pt-2">
+                    <Checkbox
+                      id="auto-ids"
+                      checked={generateAutoIds}
+                      onCheckedChange={(checked) => setGenerateAutoIds(checked === true)}
+                    />
+                    <Label htmlFor="auto-ids" className="text-sm font-normal cursor-pointer">
+                      Auto-IDs generieren, wenn Positions-ID leer ist
+                    </Label>
                   </div>
 
-                  <div className="space-y-2">
-                    <Label>Einheit *</Label>
-                    <Select 
-                      value={columnMapping.unit?.toString() || ''} 
-                      onValueChange={(v) => setColumnMapping(prev => ({ ...prev, unit: parseInt(v) }))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Spalte wählen..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {excelColumns.map((col) => (
-                          <SelectItem key={col.index} value={col.index.toString()}>{col.header}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>Einheitspreis (EP) *</Label>
-                    <Select 
-                      value={columnMapping.unit_price?.toString() || ''} 
-                      onValueChange={(v) => setColumnMapping(prev => ({ ...prev, unit_price: parseInt(v) }))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Spalte wählen..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {excelColumns.map((col) => (
-                          <SelectItem key={col.index} value={col.index.toString()}>{col.header}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>Kategorie (optional)</Label>
-                    <Select 
-                      value={columnMapping.category?.toString() || ''} 
-                      onValueChange={(v) => setColumnMapping(prev => ({ ...prev, category: v ? parseInt(v) : null }))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Spalte wählen..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="">Keine</SelectItem>
-                        {excelColumns.map((col) => (
-                          <SelectItem key={col.index} value={col.index.toString()}>{col.header}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                  <div className="text-sm text-muted-foreground">
+                    {parsedFile.rawData.length} Zeilen gefunden
                   </div>
                 </div>
+              )}
 
-                <div className="text-sm text-muted-foreground">
-                  {excelData.length} Zeilen gefunden
+              {/* Step: Validation */}
+              {uploadStep === 'validation' && importResult && !isProcessing && (
+                <div className="space-y-4">
+                  {/* Summary */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <Card>
+                      <CardContent className="pt-4">
+                        <div className="text-2xl font-bold text-primary">{importResult.validRows}</div>
+                        <div className="text-sm text-muted-foreground">Gültige Zeilen</div>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardContent className="pt-4">
+                        <div className="text-2xl font-bold text-muted-foreground">{importResult.totalRows}</div>
+                        <div className="text-sm text-muted-foreground">Gesamt</div>
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  {/* Errors */}
+                  {importResult.errors.length > 0 && (
+                    <Alert variant="destructive">
+                      <XCircle className="h-4 w-4" />
+                      <AlertTitle>{importResult.errors.length} Fehler gefunden</AlertTitle>
+                      <AlertDescription className="mt-2">
+                        {renderErrors(importResult.errors)}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  {/* Warnings */}
+                  {importResult.warnings.length > 0 && (
+                    <Alert>
+                      <AlertTriangle className="h-4 w-4" />
+                      <AlertTitle>{importResult.warnings.length} Warnungen</AlertTitle>
+                      <AlertDescription className="mt-2">
+                        {renderErrors(importResult.warnings)}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  {/* Success */}
+                  {importResult.errors.length === 0 && importResult.validRows > 0 && (
+                    <Alert className="border-primary/30 bg-primary/5">
+                      <CheckCircle className="h-4 w-4 text-primary" />
+                      <AlertTitle>Bereit zum Import</AlertTitle>
+                      <AlertDescription>
+                        {importResult.validRows} Positionen können importiert werden.
+                        {importResult.warnings.length > 0 && ' Die Warnungen beeinträchtigen den Import nicht.'}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  {/* No valid rows */}
+                  {importResult.validRows === 0 && (
+                    <Alert variant="destructive">
+                      <XCircle className="h-4 w-4" />
+                      <AlertTitle>Keine gültigen Daten</AlertTitle>
+                      <AlertDescription>
+                        Es wurden keine gültigen Zeilen zum Importieren gefunden. Bitte korrigieren Sie die Fehler in der Quelldatei.
+                      </AlertDescription>
+                    </Alert>
+                  )}
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
-            <DialogFooter>
+            <DialogFooter className="gap-2">
               <Button variant="outline" onClick={() => { resetUpload(); setUploadDialogOpen(false); }}>
                 Abbrechen
               </Button>
+
               {uploadStep === 'mapping' && (
-                <Button onClick={handleImport}>
-                  Importieren
+                <Button onClick={handleValidate} disabled={isProcessing}>
+                  Validieren
                 </Button>
+              )}
+
+              {uploadStep === 'validation' && (
+                <>
+                  <Button
+                    variant="outline"
+                    onClick={() => setUploadStep('mapping')}
+                    disabled={isProcessing}
+                  >
+                    Zurück zur Zuordnung
+                  </Button>
+                  <Button
+                    onClick={handleImport}
+                    disabled={isProcessing || !importResult || importResult.validRows === 0}
+                  >
+                    {isProcessing ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : null}
+                    {importResult?.validRows || 0} Positionen importieren
+                  </Button>
+                </>
               )}
             </DialogFooter>
           </DialogContent>
