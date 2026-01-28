@@ -7,11 +7,15 @@ export interface DailyRecord {
   date: string;
   kolonne_id: string;
   employees_count: number;
+  employees_plan: number;
   hours_per_employee: number;
+  hours_plan: number;
   planned_revenue: number;
   actual_revenue: number;
   rev_per_employee: number | null;
   rev_per_hour: number | null;
+  has_entries: boolean;
+  lv_snapshot_id: string | null;
   kolonnen?: {
     id: string;
     number: string;
@@ -23,7 +27,9 @@ export interface PeriodTotals {
   totalPlanned: number;
   totalActual: number;
   totalEmployees: number;
+  totalEmployeesPlan: number;
   totalHours: number;
+  totalHoursPlan: number;
   recordCount: number;
 }
 

@@ -19,7 +19,9 @@ export function initTotals(): PeriodTotals {
     totalPlanned: 0,
     totalActual: 0,
     totalEmployees: 0,
+    totalEmployeesPlan: 0,
     totalHours: 0,
+    totalHoursPlan: 0,
     recordCount: 0,
   };
 }
@@ -29,27 +31,36 @@ export function initTotals(): PeriodTotals {
  */
 export function addDailyToTotals(totals: PeriodTotals, record: DailyRecord): PeriodTotals {
   const employees = toNumberOrZero(record.employees_count);
+  const employeesPlan = toNumberOrZero(record.employees_plan);
   const hoursPerEmployee = toNumberOrZero(record.hours_per_employee);
+  const hoursPlan = toNumberOrZero(record.hours_plan);
   
   return {
     totalPlanned: totals.totalPlanned + toNumberOrZero(record.planned_revenue),
     totalActual: totals.totalActual + toNumberOrZero(record.actual_revenue),
     totalEmployees: totals.totalEmployees + employees,
+    totalEmployeesPlan: totals.totalEmployeesPlan + employeesPlan,
     totalHours: totals.totalHours + (employees * hoursPerEmployee),
+    totalHoursPlan: totals.totalHoursPlan + (employeesPlan * hoursPlan),
     recordCount: totals.recordCount + 1,
   };
 }
 
 /**
  * Check if a record has meaningful entries (not just default zeros)
- * A crew contributes if any value field is > 0
+ * Uses the has_entries flag if available, otherwise falls back to heuristic
  */
 export function recordHasEntries(record: DailyRecord): boolean {
+  // If has_entries is explicitly set, use it
+  if (typeof record.has_entries === 'boolean') {
+    return record.has_entries;
+  }
+  
+  // Fallback: check if any value field is > 0
   const planned = toNumberOrZero(record.planned_revenue);
   const actual = toNumberOrZero(record.actual_revenue);
   const employees = toNumberOrZero(record.employees_count);
   
-  // A record has entries if it has any non-zero meaningful data
   return planned > 0 || actual > 0 || employees > 0;
 }
 
@@ -95,7 +106,7 @@ export function aggregatePeriod(
 }
 
 /**
- * Calculate derived KPIs from totals
+ * Calculate derived KPIs from totals including plan vs actual for employees/hours
  */
 export function calculateKPIs(totals: PeriodTotals) {
   const delta = totals.totalActual - totals.totalPlanned;
@@ -107,11 +118,24 @@ export function calculateKPIs(totals: PeriodTotals) {
   // Average revenue per hour
   const avgRevPerHour = safeDivide(totals.totalActual, totals.totalHours);
   
+  // Employees plan vs actual
+  const employeesDelta = totals.totalEmployees - totals.totalEmployeesPlan;
+  const employeesFulfillment = safeDivide(totals.totalEmployees, totals.totalEmployeesPlan) * 100;
+  
+  // Hours plan vs actual
+  const hoursDelta = totals.totalHours - totals.totalHoursPlan;
+  const hoursFulfillment = safeDivide(totals.totalHours, totals.totalHoursPlan) * 100;
+  
   return {
     delta,
     deltaPositive,
     avgRevPerEmployee,
     avgRevPerHour,
+    // New plan vs actual KPIs
+    employeesDelta,
+    employeesFulfillment,
+    hoursDelta,
+    hoursFulfillment,
   };
 }
 
@@ -169,4 +193,32 @@ export function getDateRangeForPreset(preset: PeriodPreset): DateRange {
  */
 export function toISODateString(date: Date): string {
   return date.toISOString().split('T')[0];
+}
+
+/**
+ * Check if a record is within the edit window for a Bauleiter
+ * Bauleiter can edit until record.date + 2 days (in Europe/Berlin timezone)
+ */
+export function isWithinEditWindow(recordDate: string, isAdmin: boolean): boolean {
+  if (isAdmin) return true; // Admins can always edit
+  
+  const now = new Date();
+  const record = new Date(recordDate);
+  
+  // Add 2 days to the record date (end of day)
+  const deadline = new Date(record);
+  deadline.setDate(deadline.getDate() + 2);
+  deadline.setHours(23, 59, 59, 999);
+  
+  return now <= deadline;
+}
+
+/**
+ * Get the deadline date for editing a record (for display purposes)
+ */
+export function getEditDeadline(recordDate: string): Date {
+  const record = new Date(recordDate);
+  const deadline = new Date(record);
+  deadline.setDate(deadline.getDate() + 2);
+  return deadline;
 }

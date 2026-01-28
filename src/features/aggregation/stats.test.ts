@@ -13,11 +13,15 @@ const createMockRecord = (overrides: Partial<DailyRecord> = {}): DailyRecord => 
   date: '2025-01-15',
   kolonne_id: 'crew-1',
   employees_count: 5,
+  employees_plan: 5,
   hours_per_employee: 8,
+  hours_plan: 8,
   planned_revenue: 1000,
   actual_revenue: 1200,
   rev_per_employee: 240,
   rev_per_hour: 30,
+  has_entries: true,
+  lv_snapshot_id: null,
   ...overrides,
 });
 
@@ -37,9 +41,14 @@ describe('recordHasEntries', () => {
     expect(recordHasEntries(record)).toBe(true);
   });
 
-  it('returns false when all values are 0', () => {
-    const record = createMockRecord({ planned_revenue: 0, actual_revenue: 0, employees_count: 0 });
+  it('returns false when all values are 0 and has_entries is false', () => {
+    const record = createMockRecord({ planned_revenue: 0, actual_revenue: 0, employees_count: 0, has_entries: false });
     expect(recordHasEntries(record)).toBe(false);
+  });
+
+  it('uses has_entries flag when explicitly set', () => {
+    const record = createMockRecord({ planned_revenue: 0, actual_revenue: 0, employees_count: 0, has_entries: true });
+    expect(recordHasEntries(record)).toBe(true);
   });
 });
 
@@ -59,10 +68,10 @@ describe('aggregatePeriod', () => {
     expect(result.contributingCrewIds.has('crew-1')).toBe(false);
   });
 
-  it('excludes records with hasEntries = false (all zeros)', () => {
+  it('excludes records with hasEntries = false', () => {
     const records = [
-      createMockRecord({ kolonne_id: 'crew-1', planned_revenue: 100 }),
-      createMockRecord({ kolonne_id: 'crew-2', planned_revenue: 0, actual_revenue: 0, employees_count: 0 }),
+      createMockRecord({ kolonne_id: 'crew-1', planned_revenue: 100, has_entries: true }),
+      createMockRecord({ kolonne_id: 'crew-2', planned_revenue: 0, actual_revenue: 0, employees_count: 0, has_entries: false }),
     ];
 
     const range = { from: new Date('2025-01-01'), to: new Date('2025-01-31') };
