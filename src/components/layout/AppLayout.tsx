@@ -60,6 +60,18 @@ export function AppLayout({ children }: AppLayoutProps) {
       href: '/berichte', 
       label: 'Berichte', 
       icon: BarChart3,
+      roles: ['HOST', 'GF', 'BAULEITER']
+    },
+    { 
+      href: '/admin/users', 
+      label: 'Bauleiter & Zugänge', 
+      icon: Users,
+      roles: ['HOST', 'GF']
+    },
+    { 
+      href: '/admin/kolonnen', 
+      label: 'Kolonnen', 
+      icon: Users,
       roles: ['HOST', 'GF']
     },
   ];

@@ -519,6 +519,7 @@ export default function LVVerwaltung() {
                 <Label htmlFor="lv-project">Projekt</Label>
                 <Input
                   id="lv-project"
+                  data-testid="lv-project-select"
                   value={newLVProject}
                   onChange={(e) => setNewLVProject(e.target.value)}
                   placeholder="z.B. Musterstadt"
@@ -533,7 +534,7 @@ export default function LVVerwaltung() {
                   placeholder="z.B. 1.0"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-2 gap-4" data-testid="lv-validity-editor">
                 <div className="space-y-2">
                   <Label htmlFor="lv-valid-from">Gültig von</Label>
                   <Input
@@ -541,6 +542,7 @@ export default function LVVerwaltung() {
                     type="date"
                     value={newLVValidFrom}
                     onChange={(e) => setNewLVValidFrom(e.target.value)}
+                    max={newLVValidTo || undefined}
                   />
                 </div>
                 <div className="space-y-2">
@@ -550,6 +552,7 @@ export default function LVVerwaltung() {
                     type="date"
                     value={newLVValidTo}
                     onChange={(e) => setNewLVValidTo(e.target.value)}
+                    min={newLVValidFrom || undefined}
                   />
                 </div>
               </div>
