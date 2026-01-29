@@ -48,8 +48,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (profileData) {
         setProfile(profileData as Profile);
+        // Use role from profiles table as primary source
+        if (profileData.role) {
+          setUserRole(profileData.role as AppRole);
+        }
       }
 
+      // Also check user_roles table as fallback
       const { data: roleData, error: roleError } = await supabase
         .from('user_roles')
         .select('role')
@@ -61,8 +66,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      if (roleData) {
+      // user_roles takes precedence if it exists
+      if (roleData && roleData.role) {
         setUserRole(roleData.role as AppRole);
+      } else if (profileData?.role) {
+        // Fallback to profile role if user_roles empty
+        setUserRole(profileData.role as AppRole);
       }
     } catch (err) {
       console.error('Error in fetchUserProfile:', err);
