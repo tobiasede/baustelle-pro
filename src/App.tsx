@@ -15,6 +15,10 @@ import Tagesmeldung from "./pages/Tagesmeldung";
 import Berichte from "./pages/Berichte";
 import NotFound from "./pages/NotFound";
 
+// Admin pages
+import AdminUsersPage from "./features/users/AdminUsersPage";
+import AdminKolonnenPage from "./features/kolonnen/AdminKolonnenPage";
+
 const queryClient = new QueryClient();
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -76,6 +80,23 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <Berichte />
+          </ProtectedRoute>
+        }
+      />
+      {/* Admin routes */}
+      <Route
+        path="/admin/users"
+        element={
+          <ProtectedRoute>
+            <AdminUsersPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/kolonnen"
+        element={
+          <ProtectedRoute>
+            <AdminKolonnenPage />
           </ProtectedRoute>
         }
       />

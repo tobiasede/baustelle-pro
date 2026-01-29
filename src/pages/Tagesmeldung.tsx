@@ -430,8 +430,12 @@ export default function Tagesmeldung() {
               <h1 className="text-2xl font-bold text-foreground">Tagesmeldung</h1>
               <p className="text-muted-foreground">Tägliche Leistungsmeldung erfassen</p>
             </div>
-            {isBauleiter && selectedDate && (
-              <Badge variant={canEdit ? 'default' : 'secondary'} className="flex items-center gap-1">
+          {selectedDate && (
+              <Badge 
+                data-testid="badge-edit-window"
+                variant={canEdit ? 'default' : 'secondary'} 
+                className="flex items-center gap-1"
+              >
                 {canEdit ? (
                   <>Bearbeitbar bis: {formatDate(editDeadline)}</>
                 ) : (
@@ -504,6 +508,7 @@ export default function Tagesmeldung() {
                     <Label htmlFor="employeesPlan"># Mitarbeiter (PLAN)</Label>
                     <Input
                       id="employeesPlan"
+                      data-testid="input-employees-plan"
                       type="number"
                       min={0}
                       value={employeesPlan}
@@ -528,6 +533,7 @@ export default function Tagesmeldung() {
                     <Label htmlFor="hoursPlan">Stunden/MA (PLAN)</Label>
                     <Input
                       id="hoursPlan"
+                      data-testid="input-hours-plan"
                       type="number"
                       min={0}
                       step={0.5}

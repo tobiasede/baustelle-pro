@@ -427,7 +427,7 @@ export default function Berichte() {
         {/* KPI Cards - Row 1: Crews and Revenue */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4 mb-4">
           {/* Contributing Crews */}
-          <Card className="card-elevated">
+          <Card className="card-elevated" data-testid="kpi-crews">
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
                 <div>
@@ -530,7 +530,7 @@ export default function Berichte() {
         {/* KPI Cards - Row 2: Employees and Hours Plan vs Actual */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           {/* Employees Plan */}
-          <Card className="card-elevated">
+          <Card className="card-elevated" data-testid="kpi-employees">
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
                 <div>
@@ -563,7 +563,7 @@ export default function Berichte() {
           </Card>
 
           {/* Hours Plan */}
-          <Card className="card-elevated">
+          <Card className="card-elevated" data-testid="kpi-hours">
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
                 <div>
@@ -627,7 +627,7 @@ export default function Berichte() {
                     <TableRow>
                       <TableHead>Datum</TableHead>
                       <TableHead>Kolonne</TableHead>
-                      <TableHead>Projekt</TableHead>
+                      <TableHead data-testid="col-project">Projekt</TableHead>
                       <TableHead className="text-center">MA (PLAN)</TableHead>
                       <TableHead className="text-center">MA (IST)</TableHead>
                       <TableHead className="text-center">Std/MA (PLAN)</TableHead>
