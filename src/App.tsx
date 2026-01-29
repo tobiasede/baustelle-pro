@@ -17,6 +17,7 @@ import Tagesmeldung from "./pages/Tagesmeldung";
 import Berichte from "./pages/Berichte";
 import NotFound from "./pages/NotFound";
 import AdminDiagnostics from "./pages/AdminDiagnostics";
+import AdminDataInspector from "./pages/AdminDataInspector";
 
 // Admin pages
 import AdminUsersPage from "./features/users/AdminUsersPage";
@@ -115,6 +116,14 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <AdminDiagnostics />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/data-inspector"
+        element={
+          <ProtectedRoute>
+            <AdminDataInspector />
           </ProtectedRoute>
         }
       />

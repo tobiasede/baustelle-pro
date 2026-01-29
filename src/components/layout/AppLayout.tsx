@@ -80,6 +80,13 @@ const navItems: NavItem[] = [
     roles: ['HOST', 'GF'],
     testId: 'nav-kolonnen'
   },
+  { 
+    href: '/admin/data-inspector', 
+    label: 'Daten-Inspektor', 
+    icon: LayoutDashboard,
+    roles: ['HOST', 'GF'],
+    testId: 'nav-data-inspector'
+  },
 ];
 
 export function AppLayout({ children }: AppLayoutProps) {
