@@ -4,7 +4,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { AppShell } from "@/components/layout/AppShell";
 import { Loader2 } from "lucide-react";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 // Pages
 import Auth from "./pages/Auth";
@@ -14,6 +16,7 @@ import KolonnenZuweisung from "./pages/KolonnenZuweisung";
 import Tagesmeldung from "./pages/Tagesmeldung";
 import Berichte from "./pages/Berichte";
 import NotFound from "./pages/NotFound";
+import AdminDiagnostics from "./pages/AdminDiagnostics";
 
 // Admin pages
 import AdminUsersPage from "./features/users/AdminUsersPage";
@@ -24,11 +27,18 @@ const queryClient = new QueryClient();
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
 
+  // During loading, show a minimal loading state but don't block completely
+  // The AppShell and AppLayout will show default navigation
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-      </div>
+      <AppShell>
+        <div className="min-h-screen flex items-center justify-center bg-background">
+          <div className="text-center">
+            <Loader2 className="w-8 h-8 animate-spin text-primary mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground">Authentifizierung wird geladen...</p>
+          </div>
+        </div>
+      </AppShell>
     );
   }
 
@@ -36,7 +46,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     return <Navigate to="/auth" replace />;
   }
 
-  return <>{children}</>;
+  return <AppShell>{children}</AppShell>;
 }
 
 function AppRoutes() {
@@ -100,23 +110,33 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
+      <Route
+        path="/admin/diagnostics"
+        element={
+          <ProtectedRoute>
+            <AdminDiagnostics />
+          </ProtectedRoute>
+        }
+      />
       <Route path="*" element={<NotFound />} />
     </Routes>
   );
 }
 
 const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <BrowserRouter>
-        <AuthProvider>
-          <AppRoutes />
-        </AuthProvider>
-      </BrowserRouter>
-    </TooltipProvider>
-  </QueryClientProvider>
+  <ErrorBoundary>
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Toaster />
+        <Sonner />
+        <BrowserRouter>
+          <AuthProvider>
+            <AppRoutes />
+          </AuthProvider>
+        </BrowserRouter>
+      </TooltipProvider>
+    </QueryClientProvider>
+  </ErrorBoundary>
 );
 
 export default App;

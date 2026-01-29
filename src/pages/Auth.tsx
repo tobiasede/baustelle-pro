@@ -27,7 +27,7 @@ const signupSchema = z.object({
 
 export default function Auth() {
   const navigate = useNavigate();
-  const { user, signIn, signUp, loading } = useAuth();
+  const { user, signIn, signUp, loading, userRole } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -44,9 +44,11 @@ export default function Auth() {
 
   useEffect(() => {
     if (user && !loading) {
-      navigate('/');
+      // Redirect based on role after login
+      const isAdmin = userRole === 'HOST' || userRole === 'GF';
+      navigate(isAdmin ? '/berichte' : '/tagesmeldung');
     }
-  }, [user, loading, navigate]);
+  }, [user, loading, userRole, navigate]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
